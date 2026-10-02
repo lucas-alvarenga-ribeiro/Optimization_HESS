@@ -160,13 +160,13 @@ class MyOutput(Output):
         super().update(algorithm)
 
         # ideal point atual
-        ideal = algorithm.opt.get("F").min(axis=0)
+        ideal = algorithm.opt.get("F").min(axis=0) # Menor valor ótimo de cada coluna da FOB
 
         # calcula eps
         if self.last_ideal is None:
             eps = 0.0
         else:
-            eps = float(np.linalg.norm(ideal - self.last_ideal))
+            eps = float(np.linalg.norm(ideal - self.last_ideal)) # Distância
 
         # indicador baseado na mudança do ideal
         if self.last_ideal is None:
@@ -174,7 +174,7 @@ class MyOutput(Output):
         else:
             if eps == 0:
                 indicator = "f"
-            elif np.all(ideal <= self.last_ideal):
+            elif np.all(ideal <= self.last_ideal): # Verifica se o ponto ideal atual é menor que o último
                 indicator = "ideal"
             else:
                 indicator = "nadir"
@@ -186,9 +186,9 @@ class MyOutput(Output):
         n_nds = len(algorithm.opt)
 
         # restrições
-        CV = algorithm.opt.get("CV")
-        cv_min = float(CV.min()) if CV is not None else None
-        cv_avg = float(CV.mean()) if CV is not None else None
+        CV = algorithm.opt.get("CV")  # CV se refere as violações de restrições
+        cv_min = float(CV.min()) if CV is not None else None # Valor Mínimo
+        cv_avg = float(CV.mean()) if CV is not None else None # Valor Médio
 
         # monta o dicionário completo
         row = {
@@ -209,8 +209,8 @@ class MyOutput(Output):
 
     def finalize(self):
         print(f"Simulação: {self.data}")
-        df = pd.DataFrame(self.data)
-        df.to_csv(self.optimization_output, index=False, sep=";")
+        df = pd.DataFrame(self.data) # Transforma em tabela
+        df.to_csv(self.optimization_output, index=False, sep=";") # Salva em arquivo .csv
 
 
 class MyProblem(ElementwiseProblem):
@@ -228,13 +228,13 @@ class MyProblem(ElementwiseProblem):
         self._preco_razao_elepot = preco_razao_elepot
         self._Pb = Pb
         self._Puc = Puc
-        self._T_xb = T_xb
+        self._T_xb = T_xb # C-rate
 
     def setData(self, data: str, sheet: str):
         self._data = data
         self._sheet = sheet
         df = pd.read_excel(data, sheet_name=sheet)
-        self._duracao_ciclo_operacao_hora = len(df) * 1 /3600
+        self._duracao_ciclo_operacao_hora = len(df) * 1 /3600 
 
     def setParams(self, dict : dict) -> None:
         """
@@ -301,7 +301,7 @@ class MyProblem(ElementwiseProblem):
             # Energia absorvida é a soma das potências negativas (absorvidas) pelos sistemas
             p_batt_arr = np.array(sim._p_batt)
             p_uc_arr = np.array(sim._p_uc)
-            uf_diff = np.array(sim._uc_diff)
+            uf_diff = np.array(sim._uc_diff) #?
             energia_absorvida = (
                 np.abs(np.sum(p_batt_arr[p_batt_arr < 0])) +
                 np.abs(np.sum(p_uc_arr[p_uc_arr < 0])) - 
