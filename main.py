@@ -360,6 +360,7 @@ class MyProblem(ElementwiseProblem):
                     saude_bat.append(saude_bat_mensal)
                     troca_bat.append(1)
                     balanco_mes += -custo_bateria
+                    # Se a bateria ultrapassou a contagem de ciclos da vida útil deve ser trocada
                 else:
                     saude_bat_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total % ciclos_bateria_vida, ciclos_bateria_vida)
                     saude_bat.append(saude_bat_mensal)
@@ -372,6 +373,7 @@ class MyProblem(ElementwiseProblem):
                     saude_uc.append(saude_uc_mensal)
                     troca_uc.append(1)
                     balanco_mes += -custo_supercap
+                    #Se o supercapacitor estiver com sapude abaixo de 80% é trocado por um novo
                 else:
                     saude_uc.append(saude_uc_mensal)
                     troca_uc.append(0)
@@ -391,7 +393,7 @@ class MyProblem(ElementwiseProblem):
 
         # Como a otimização é de minimização, usamos o valor negativo do VPL
         out["F"] = [-vpl]
-        out["G"] = [G]
+        out["G"] = [G] # Volume restante
         
         # Armazenar o fluxo de caixa se for a melhor solução até agora
         if not hasattr(self, 'melhor_vpl') or (vpl > self.melhor_vpl and G < 0):
