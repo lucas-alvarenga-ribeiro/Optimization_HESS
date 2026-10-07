@@ -68,8 +68,8 @@ class Batt():
         try:
             df = pd.read_csv("data\\LUT_batt.csv", sep=";")
             df["SoC"] = 100 - df["SoC"]  # Inverte SoC para corresponder ao padrão de carga
-            indice_proximo = (df['SoC'] - SoC).abs().idxmin()
-            tensao = df.loc[indice_proximo, 'Tensao']
+            indice_proximo = (df['SoC'] - SoC).abs().idxmin() #encontra o ponto mais próximo
+            tensao = df.loc[indice_proximo, 'Tensao'] #encontra o valor na tabela
             return float(tensao)
         except Exception as e:
             print(f"Erro ao ler LUT: {e}")
@@ -134,7 +134,7 @@ class Batt():
             new_energy = self._SoC_Energy + energy_variation                    # Nova energia, considerando a variacao
             
             # Limita energia entre mínimo e máximo
-            clip_energy = np.clip(
+            clip_energy = np.clip(                                               # Limita energia entre 20% e 80%
                 new_energy, 
                 (self._min_SoC/100) * self._total_energy,
                 (self._max_SoC/100) * self._total_energy
