@@ -15,3 +15,5 @@ cashflow.py: Plota gráfico do fluxo de caixa e calcula VPL
 example.py: Problema de otimização genérico com NSGA II
 
 sensibilidade.py: Calcula valores ótimos e o VPL ao variar alguma entrada do sistema dentro dos limites especificados (preço do diesel, do dollar e etc).
+
+simulation.py: Cria a classe Simulation() usada no main, utilizando os modelos e simulando um controle supervisório a partir da histerese do capacitor.
