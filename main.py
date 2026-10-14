@@ -8,9 +8,12 @@ from math import floor
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.util.display.output import Output
 from pymoo.util.display.column import Column
-from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.config import Config
 Config.warnings['not_compiled'] = False
+
+from pymoo.algorithms.soo.nonconvex.ga import GA
+from pymoo.problems import get_problem
+from pymoo.optimize import minimize
 
 from simulation import Simulation
 
@@ -430,7 +433,7 @@ from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 
-algorithm = NSGA2(
+algorithm = GA(
     pop_size=20,
     n_offsprings=20,
     sampling=IntegerRandomSampling(),
@@ -443,7 +446,6 @@ from pymoo.termination import get_termination
 
 termination = get_termination("n_gen", 1)
 
-from pymoo.optimize import minimize
 
 if DEBUG == 1:
     X = np.array([[1.67568827 , 2.00387028 , 2.42676082],
