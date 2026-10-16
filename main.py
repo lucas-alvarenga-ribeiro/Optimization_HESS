@@ -17,6 +17,21 @@ from pymoo.optimize import minimize
 
 from simulation import Simulation
 
+modelos_bateria = {
+    0: {
+        "nome": "LFP_40Ah",
+        "quimica": "LFP",
+        "capacidade_Ah": 40,
+        "tensao_nominal_V": 3.2,
+        "c_rate": 6,
+        "preco_usd": 12.8,
+        "volume_m3": 0.596,    #L
+        "peso_kg": 1.06,       #kg
+        "vida_ciclos": 5300,  
+        "SOC_inicial": 20,
+    },
+}
+
 DEBUG = 0
 
 plt.rcParams.update({
@@ -156,15 +171,16 @@ class MyOutput(Output):
     def __init__(self, optimization_output):
         super().__init__()
         self.data = []
-        self.last_ideal = None
+        #self.last_ideal = None   
         self.optimization_output = optimization_output
 
     def update(self, algorithm):
         super().update(algorithm)
 
         # ideal point atual
-        ideal = algorithm.opt.get("F").min(axis=0) # Menor valor ótimo de cada coluna da FOB
+        #best_f = algorithm.opt.get("F").min() # 
 
+        """
         # calcula eps
         if self.last_ideal is None:
             eps = 0.0
@@ -187,6 +203,8 @@ class MyOutput(Output):
 
         # número de soluções não dominadas
         n_nds = len(algorithm.opt)
+        """
+        # Se o sistema é mono objetivo, F só tem uma coluna e não há necessidade de acompanhar soluções não dominadas.
 
         # restrições
         CV = algorithm.opt.get("CV")  # CV se refere as violações de restrições
@@ -197,11 +215,11 @@ class MyOutput(Output):
         row = {
             "n_gen": algorithm.n_gen,
             "n_evals": algorithm.evaluator.n_eval,
-            "n_nds": n_nds,
+            #"n_nds": n_nds,
             "cv_min": cv_min,
             "cv_avg": cv_avg,
-            "eps": eps,
-            "indicator": indicator
+            #"eps": eps,
+            #"indicator": indicator
         }
 
         # salva no histórico
@@ -428,7 +446,6 @@ data = "data/" + arquivo
 sheet = "Log"
 problem.setData(data, sheet)
 
-from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
@@ -444,7 +461,7 @@ algorithm = GA(
 
 from pymoo.termination import get_termination
 
-termination = get_termination("n_gen", 1)
+termination = get_termination("n_gen", 1) # Uma geração é para teste?
 
 
 if DEBUG == 1:
