@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import pickle
 
 
 
@@ -8,13 +9,38 @@ from pymoo.config import Config
 Config.warnings['not_compiled'] = False
 from simulation import Simulation
 from main import modelos_bateria, Ns_b, Cap_uc, Ns_uc, T_xuc, SoC_uc_ref, BH, Taxa, step_pth, volume_maximo, horizonte_analise_meses
-from main import problem, X, F, G, data, sheet, diretorio_figuras, arquivo
+from main import data, sheet, diretorio_figuras, arquivo
+from main import Resultados, MyProblem
 
 #Dimensões das figuras em centímetros
 fig_width_cm = 24/2.4
 fig_height_cm = 18/2.4
 
+# Resultados da otimização
 
+with open('resultados.pkl', 'rb') as archive:
+    resultados = pickle.load(archive)
+
+dados_resultados = resultados.retorna_resultados()
+X = dados_resultados["X"]
+F = dados_resultados["F"]
+G = dados_resultados["G"]
+saude_bat_Ot = dados_resultados["saude_bat"]
+melhor_vpl_Ot = dados_resultados["melhor_vpl"]
+xl_Ot = dados_resultados["xl"]
+xu_Ot = dados_resultados["xu"]
+saude_uc_Ot = dados_resultados["saude_uc"]
+troca_bat_Ot = dados_resultados["troca_bat"]
+melhor_fluxo_caixa_Ot = dados_resultados["melhor_fluxo_caixa"]
+print(f"X: {X}")
+print(f"F: {F}")
+print(f"G: {G}")
+
+print("\n=== VERIFICAÇÃO (PLOTS) ===")
+print("Shape de X:", X.shape if X is not None else None)
+print("Soma de F:", np.sum(F) if F is not None else None)
+print("Soma do Fluxo de Caixa:", np.sum(melhor_fluxo_caixa_Ot))
+print("Primeiros 3 itens de saude_bat:", saude_bat_Ot[:3])
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Visualização do espaço de design -------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -34,9 +60,9 @@ ax.set_title("Espaço de Design")
 ax.grid(zorder=1)
 ax.set_xticks(np.arange(1, 11, 1))
 ax.set_yticks(np.arange(1, 11, 1))
-ax.set_xlim(problem.xl[0]-1, problem.xu[0]+1)
-ax.set_ylim(problem.xl[1]-1, problem.xu[1]+1)
-ax.set_zlim(problem.xl[2]-100, problem.xu[2]+100)
+ax.set_xlim(xl_Ot[0]-1, xu_Ot[0]+1)
+ax.set_ylim(xl_Ot[1]-1, xu_Ot[1]+1)
+ax.set_zlim(xl_Ot[2]-100, xu_Ot[2]+100)
 plt.tight_layout()
 plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_01_design_space.pdf", bbox_inches='tight')
 plt.show(block=False)
@@ -380,8 +406,8 @@ plt.show(block=False)
 import cashflow
 
 # Usar o fluxo de caixa da melhor solução já calculado durante a otimização
-if hasattr(problem, 'melhor_fluxo_caixa'):
-    cf = cashflow.CashFlow(problem.melhor_fluxo_caixa)
+if melhor_fluxo_caixa_Ot is not None:
+    cf = cashflow.CashFlow(melhor_fluxo_caixa_Ot)
     cf.plot()
     # plt.title('Fluxo de Caixa Mensal - Melhor Solução')
     # plt.xlabel('Meses')
@@ -406,9 +432,9 @@ else:
 #     else:
 #         capacidade_bateria[i] = 1  # Após vida útil, mantém 80%
 plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-plt.step(np.arange(horizonte_analise_meses), np.array(problem.saude_bat), where="post")
-print(f"Saúde da bateria: {problem.saude_bat}")
-print(f"troca de bateria: {problem.troca_bat}")
+plt.step(np.arange(horizonte_analise_meses), np.array(saude_bat_Ot), where="post")
+print(f"Saúde da bateria: {saude_bat_Ot}")
+print(f"troca de bateria: {troca_bat_Ot}")
 plt.title('Degradação da Bateria ao Longo do Tempo')
 plt.xlabel('Meses')
 plt.ylabel(r'Capacidade Residual [\%]')
@@ -435,7 +461,7 @@ plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
 if best_Np_uc == 0:
     plt.step(np.arange(horizonte_analise_meses), np.zeros(horizonte_analise_meses), color='tab:blue', where="post")
 else:
-    plt.step(np.arange(horizonte_analise_meses), np.array(problem.saude_uc) * 100, color='tab:blue', where="post")
+    plt.step(np.arange(horizonte_analise_meses), np.array(saude_uc_Ot) * 100, color='tab:blue', where="post")
     plt.ylim(99, 101)
 plt.title('Degradação do Supercapacitor ao Longo do Tempo')
 plt.xlabel('Meses')

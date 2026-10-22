@@ -15,6 +15,7 @@ from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.termination import get_termination
+import pickle
 
 from simulation import Simulation
 
@@ -169,6 +170,11 @@ arquivo = "UMAX_18-10-24.xlsx"
 diretorio_figuras = "Figuras/" + arquivo.split(".")[0]
 data = "data/" + arquivo
 sheet = "Log"
+
+#Tirar dps
+#Dimensões das figuras em centímetros
+fig_width_cm = 24/2.4
+fig_height_cm = 18/2.4
 
 
 # Definição do problema de otimização
@@ -445,6 +451,36 @@ class MyProblem(ElementwiseProblem):
             self.modelo_b = modelo_b
             self.nome_modelo_b = modelo['nome']
 
+class Resultados:
+    def __init__(self):
+        self.X = None
+        self.F = None
+        self.G = None
+        self.problem = None
+
+    def set_results(self, X, F, G, problem):
+        self.X = X
+        self.F = F
+        self.G = G
+        self.problem = problem
+
+    def retorna_resultados(self):
+        return {
+            "X": self.X,
+            "F": self.F,
+            "G": self.G,
+            "melhor_vpl": self.problem.melhor_vpl,
+            "volume_total": self.problem.volume_total,
+            "saude_bat": self.problem.saude_bat,
+            "saude_uc": self.problem.saude_uc,
+            "troca_bat": self.problem.troca_bat,
+            "xl": self.problem.xl,
+            "xu": self.problem.xu,
+            "melhor_fluxo_caixa": self.problem.melhor_fluxo_caixa,
+        }
+
+
+
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Otimização ------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -628,11 +664,27 @@ if __name__ == "__main__":
     print(f'G: {G}')
     outputDisplay.finalize()
 
+    resultados = Resultados()
+    resultados.set_results(X, F, G, problem)
 
+    print("\n=== VERIFICAÇÃO (MAIN) ===")
+    print("Shape de X:", X.shape if X is not None else None)
+    print("Soma de F:", np.sum(F) if F is not None else None)
+    print("Soma do Fluxo de Caixa:", np.sum(problem.melhor_fluxo_caixa))
+    print("Primeiros 3 itens de saude_bat:", problem.saude_bat[:3])
+
+    with open('resultados.pkl', 'wb') as archive:
+        pickle.dump(resultados, archive)
+
+    print("Resultados salvos com sucesso em 'resultados.pkl'!")
+
+
+
+"""
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Visualização do espaço de design -------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
-"""
+
 plt.figure(figsize=(fig_width_cm, fig_height_cm))
 ax = plt.axes(projection='3d')
 X_int = np.round(X).astype(int)
