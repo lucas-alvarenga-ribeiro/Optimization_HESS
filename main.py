@@ -1,19 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from time import sleep
 import pandas as pd
-from math import floor
 
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.util.display.output import Output
-from pymoo.util.display.column import Column
 from pymoo.config import Config
 Config.warnings['not_compiled'] = False
 
 from pymoo.algorithms.soo.nonconvex.ga import GA
-from pymoo.problems import get_problem
 from pymoo.optimize import minimize
+
+from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.termination import get_termination
 
 from simulation import Simulation
 
@@ -25,23 +26,36 @@ modelos_bateria = {
         "tensao_nominal_V": 3.2,
         "tensao_maxima_V": 3.65,
         "c_rate": 6,
-        "preco_usd": 12.8,
-        "volume_m3": 0.596,    #L
-        "peso_kg": 1.06,       #kg
-        "vida_ciclos": 5300,  
+        "preco_usd": 36.62,
+        "volume_m3": 0.596,    #L, Volume da célula?
+        "peso_kg": 1.085,       #kg
+        "vida_ciclos": 4000,
         "SOC_inicial": 20,
     },
     1: {
-        "nome": "LFP_100Ah",                 #Genérico para teste
+        "nome": "LFP_60Ah",                 #Genérico para teste
         "quimica": "LFP",
-        "capacidade_Ah": 100,
+        "capacidade_Ah": 60,
         "tensao_nominal_V": 3.2,
         "tensao_maxima_V": 3.65,
-        "c_rate": 6,
-        "preco_usd": 32.0,
-        "volume_m3": 1.49,    #L
-        "peso_kg": 2.65,       #kg
-        "vida_ciclos": 5300,  
+        "c_rate": 4,
+        "preco_usd": 28.5,
+        "volume_m3": 0.596,    #L
+        "peso_kg": 1.5,       #kg
+        "vida_ciclos": 2000,  
+        "SOC_inicial": 20,
+    },
+    2: {
+        "nome": "Na_50Ah",                 #Genérico para teste
+        "quimica": "Na",
+        "capacidade_Ah": 50,
+        "tensao_nominal_V": 2.85,
+        "tensao_maxima_V": 3.5,
+        "c_rate": 0.5,
+        "preco_usd": 27.5,
+        "volume_m3": 0.596,    #L
+        "peso_kg": 1.65,       #kg
+        "vida_ciclos": 8000,  
         "SOC_inicial": 20,
     }
 }
@@ -60,8 +74,7 @@ plt.rcParams.update({
     "ytick.labelsize": 16,
 })
 
-fig_width_cm = 24/2.4
-fig_height_cm = 18/2.4
+
 
 # Parâmetros financeiros e operacionais
 preco_diesel = 5.78  # R$/litro
@@ -148,6 +161,16 @@ Cap_uc = 280.0                                                      # Capacidade
 T_xuc = 8                                                           # Multiplicador da capacidade do supercapacitor
 
 
+# Variáveis para otimização
+SoC_uc_ref = 50
+BH = 4
+Taxa = 0.5
+arquivo = "UMAX_18-10-24.xlsx"
+diretorio_figuras = "Figuras/" + arquivo.split(".")[0]
+data = "data/" + arquivo
+sheet = "Log"
+
+
 # Definição do problema de otimização
 # A principio, Np_b (número de baterias em paralelo) e Np_uc (número de supercapacitores em paralelo) são variáveis de decisão
 # A principio, o problema é definido como um problema de otimização multiobjetivo, em que o objetivo é minimizar o custo total, o volume total e o peso total do sistema de armazenamento de energia
@@ -184,40 +207,13 @@ class MyOutput(Output):
 
     def __init__(self, optimization_output):
         super().__init__()
-        self.data = []
-        #self.last_ideal = None   
+        self.data = []  
         self.optimization_output = optimization_output
 
     def update(self, algorithm):
         super().update(algorithm)
 
-        # ideal point atual
-        #best_f = algorithm.opt.get("F").min() # 
 
-        """
-        # calcula eps
-        if self.last_ideal is None:
-            eps = 0.0
-        else:
-            eps = float(np.linalg.norm(ideal - self.last_ideal)) # Distância
-
-        # indicador baseado na mudança do ideal
-        if self.last_ideal is None:
-            indicator = "f"
-        else:
-            if eps == 0:
-                indicator = "f"
-            elif np.all(ideal <= self.last_ideal): # Verifica se o ponto ideal atual é menor que o último
-                indicator = "ideal"
-            else:
-                indicator = "nadir"
-
-        # atualiza memória
-        self.last_ideal = ideal
-
-        # número de soluções não dominadas
-        n_nds = len(algorithm.opt)
-        """
         # Se o sistema é mono objetivo, F só tem uma coluna e não há necessidade de acompanhar soluções não dominadas.
 
         # restrições
@@ -229,11 +225,8 @@ class MyOutput(Output):
         row = {
             "n_gen": algorithm.n_gen,
             "n_evals": algorithm.evaluator.n_eval,
-            #"n_nds": n_nds,
             "cv_min": cv_min,
             "cv_avg": cv_avg,
-            #"eps": eps,
-            #"indicator": indicator
         }
 
         # salva no histórico
@@ -455,199 +448,191 @@ class MyProblem(ElementwiseProblem):
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Otimização ------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
-SoC_uc_ref = 50
-BH = 4
-Taxa = 0.5
-problem = MyProblem()
-problem.configFluxUC2Bat(SoC_uc_ref, BH, Taxa)
-arquivo = "UMAX_18-10-24.xlsx"
-diretorio_figuras = "Figuras/" + arquivo.split(".")[0]
-os.makedirs(diretorio_figuras, exist_ok=True)
-data = "data/" + arquivo
-sheet = "Log"
-problem.setData(data, sheet)
-
-from pymoo.operators.sampling.rnd import IntegerRandomSampling
-from pymoo.operators.crossover.sbx import SBX
-from pymoo.operators.mutation.pm import PM
-
-algorithm = GA(
-    pop_size=20,
-    n_offsprings=20,
-    sampling=IntegerRandomSampling(),
-    crossover=SBX(prob=0.8, eta=10),
-    mutation=PM(eta=10, prob=0.4),
-    eliminate_duplicates=True
-)
-
-from pymoo.termination import get_termination
-
-termination = get_termination("n_gen", 1) # Uma geração é para teste?
+if __name__ == "__main__":
+    problem = MyProblem()
+    problem.configFluxUC2Bat(SoC_uc_ref, BH, Taxa)
+    os.makedirs(diretorio_figuras, exist_ok=True)
+    problem.setData(data, sheet)
 
 
-if DEBUG == 1:
-    X = np.array([[1.67568827 , 2.00387028 , 2.42676082],
-                  [2.45828371 , 2.16749542 , 2.29327055],
-                  [2.48089061 , 2.00954174 , 2.29311394],
-                  [1.68066717 , 2.00387028 , 2.42676082],
-                  [2.3824625  , 1.72352808 , 2.00388331],
-                  [2.46946474 , 2.01153336 , 2.3417322 ],
-                  [1.80650082 , 2.16749542 , 2.28653366],
-                  [2.42323793 , 1.71690139 , 1.68014845],
-                  [2.46766855 , 2.01030525 , 2.2843379 ],
-                  [2.48441901 , 1.71674928 , 1.67953821],
-                  [1.66524314 , 2.15307047 , 2.28653366],
-                  [2.41622185 , 2.03898575 , 2.27603183],
-                  [2.46373699 , 2.00926662 , 2.29311394],
-                  [2.42026014 , 2.27297904 , 2.29195702],
-                  [1.72671404 , 2.07843162 , 2.27633423],
-                  [2.4163137  , 2.01700668 , 2.29311394],
-                  [2.36949422 , 2.07832437 , 2.2792785 ],
-                  [2.47444365 , 2.01153336 , 2.3423704 ],
-                  [2.41139047 , 1.73282528 , 1.68065134],
-                  [1.6689999  , 2.16749542 , 2.42979231],
-                  [2.4697575  , 1.73621974 , 2.34483868],
-                  [2.46946455 , 2.01062817 , 2.28950294],
-                  [1.66916977 , 2.16749542 , 2.28717186],
-                  [2.46713047 , 2.01001253 , 2.29311394],
-                  [2.46946439 , 2.0297654  , 2.43276159],
-                  [2.46713047 , 2.01008903 , 2.29311394],
-                  [2.46948572 , 2.07401983 , 2.29519769],
-                  [1.68789503 , 2.15607932 , 1.67230267],
-                  [2.41622185 , 2.03923487 , 1.6801506 ],
-                  [2.48134673 , 2.01033768 , 2.28198642],
-                  [2.48198928 , 1.73621974 , 2.29436782],
-                  [1.65552358 , 2.28751669 , 2.29436782],
-                  [2.41451112 , 2.07752873 , 2.29439125],
-                  [2.48169737 , 2.01153336 , 2.29372633],
-                  [2.46881361 , 2.00976048 , 2.34335867],
-                  [2.49832873 , 2.07843162 , 2.27633423],
-                  [1.65569346 , 2.28751669 , 2.29436782],
-                  [1.70103911 , 2.31993647 , 1.66291752],
-                  [2.46883301 , 2.00967934 , 2.29349918],
-                  [2.48441901 , 1.71674928 , 1.6801506 ],
-                  [1.63209465 , 1.74098441 , 2.28551734],
-                  [2.46713047 , 2.01033815 , 1.69723271],
-                  [1.6689999  , 2.16749542 , 2.28653366],
-                  [2.46975665 , 1.73621974 , 2.2944346 ],
-                  [1.66524314 , 2.16749542 , 2.29327055],
-                  [2.46881427 , 2.02905398 , 2.34555423],
-                  [2.46946474 , 2.01153336 , 2.3423704 ],
-                  [1.6689999  , 2.16749542 , 2.28717186],
-                  [2.47644084 , 2.29618761 , 2.29436782],
-                  [2.46832116 , 1.83287873 , 2.28198642]])
-    F = np.array([[-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403]])
-    problem.saude_bat = [1, 0.9565283018867925,
-                         0.913056603773585,
-                         0.8695849056603775,
-                         0.82611320754717,
-                         1,
-                         0.9565283018867925,
-                         0.913056603773585,
-                         0.8695849056603775,
-                         0.82611320754717,
-                         1,
-                         0.9565283018867925]
-    problem.saude_uc = [1,
-                        0.9998848,
-                        0.9997696,
-                        0.9996544,
-                        0.9995392000000001,
-                        0.9994240000000001,
-                        0.9993088000000001,
-                        0.9991936000000001,
-                        0.9990784000000001,
-                        0.9989632000000002,
-                        0.9988480000000002,
-                        0.9987328000000002]
-    problem.melhor_fluxo_caixa = [-2431162.56,
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(100808.06971927418),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(100808.06971927418),
-                                  np.float64(340362.6297192742)]
 
-else:
-    outputDisplay = MyOutput(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_optimization_table.csv")
-    res = minimize(problem,
-            algorithm,
-            termination,
-            seed=1,
-            save_history=True,
-            verbose=True,
-            output=outputDisplay)
-
-    # Após a otimização
-    X = res.X
-    F = res.F
-    G = res.G
+    algorithm = GA(
+        pop_size=20,
+        n_offsprings=20,
+        sampling=IntegerRandomSampling(),
+        crossover=SBX(prob=0.8, eta=10),
+        mutation=PM(eta=10, prob=0.4),
+        eliminate_duplicates=True
+    )
 
 
-print(f'X: {X}')
-print(f'F: {F}')
-print(f'G: {G}')
-outputDisplay.finalize()
+
+    termination = get_termination("n_gen", 1) # Uma geração é para teste?
+
+
+    if DEBUG == 1:
+        X = np.array([[1.67568827 , 2.00387028 , 2.42676082],
+                    [2.45828371 , 2.16749542 , 2.29327055],
+                    [2.48089061 , 2.00954174 , 2.29311394],
+                    [1.68066717 , 2.00387028 , 2.42676082],
+                    [2.3824625  , 1.72352808 , 2.00388331],
+                    [2.46946474 , 2.01153336 , 2.3417322 ],
+                    [1.80650082 , 2.16749542 , 2.28653366],
+                    [2.42323793 , 1.71690139 , 1.68014845],
+                    [2.46766855 , 2.01030525 , 2.2843379 ],
+                    [2.48441901 , 1.71674928 , 1.67953821],
+                    [1.66524314 , 2.15307047 , 2.28653366],
+                    [2.41622185 , 2.03898575 , 2.27603183],
+                    [2.46373699 , 2.00926662 , 2.29311394],
+                    [2.42026014 , 2.27297904 , 2.29195702],
+                    [1.72671404 , 2.07843162 , 2.27633423],
+                    [2.4163137  , 2.01700668 , 2.29311394],
+                    [2.36949422 , 2.07832437 , 2.2792785 ],
+                    [2.47444365 , 2.01153336 , 2.3423704 ],
+                    [2.41139047 , 1.73282528 , 1.68065134],
+                    [1.6689999  , 2.16749542 , 2.42979231],
+                    [2.4697575  , 1.73621974 , 2.34483868],
+                    [2.46946455 , 2.01062817 , 2.28950294],
+                    [1.66916977 , 2.16749542 , 2.28717186],
+                    [2.46713047 , 2.01001253 , 2.29311394],
+                    [2.46946439 , 2.0297654  , 2.43276159],
+                    [2.46713047 , 2.01008903 , 2.29311394],
+                    [2.46948572 , 2.07401983 , 2.29519769],
+                    [1.68789503 , 2.15607932 , 1.67230267],
+                    [2.41622185 , 2.03923487 , 1.6801506 ],
+                    [2.48134673 , 2.01033768 , 2.28198642],
+                    [2.48198928 , 1.73621974 , 2.29436782],
+                    [1.65552358 , 2.28751669 , 2.29436782],
+                    [2.41451112 , 2.07752873 , 2.29439125],
+                    [2.48169737 , 2.01153336 , 2.29372633],
+                    [2.46881361 , 2.00976048 , 2.34335867],
+                    [2.49832873 , 2.07843162 , 2.27633423],
+                    [1.65569346 , 2.28751669 , 2.29436782],
+                    [1.70103911 , 2.31993647 , 1.66291752],
+                    [2.46883301 , 2.00967934 , 2.29349918],
+                    [2.48441901 , 1.71674928 , 1.6801506 ],
+                    [1.63209465 , 1.74098441 , 2.28551734],
+                    [2.46713047 , 2.01033815 , 1.69723271],
+                    [1.6689999  , 2.16749542 , 2.28653366],
+                    [2.46975665 , 1.73621974 , 2.2944346 ],
+                    [1.66524314 , 2.16749542 , 2.29327055],
+                    [2.46881427 , 2.02905398 , 2.34555423],
+                    [2.46946474 , 2.01153336 , 2.3423704 ],
+                    [1.6689999  , 2.16749542 , 2.28717186],
+                    [2.47644084 , 2.29618761 , 2.29436782],
+                    [2.46832116 , 1.83287873 , 2.28198642]])
+        F = np.array([[-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403]])
+        problem.saude_bat = [1, 0.9565283018867925,
+                            0.913056603773585,
+                            0.8695849056603775,
+                            0.82611320754717,
+                            1,
+                            0.9565283018867925,
+                            0.913056603773585,
+                            0.8695849056603775,
+                            0.82611320754717,
+                            1,
+                            0.9565283018867925]
+        problem.saude_uc = [1,
+                            0.9998848,
+                            0.9997696,
+                            0.9996544,
+                            0.9995392000000001,
+                            0.9994240000000001,
+                            0.9993088000000001,
+                            0.9991936000000001,
+                            0.9990784000000001,
+                            0.9989632000000002,
+                            0.9988480000000002,
+                            0.9987328000000002]
+        problem.melhor_fluxo_caixa = [-2431162.56,
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(100808.06971927418),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(100808.06971927418),
+                                    np.float64(340362.6297192742)]
+
+    else:
+        outputDisplay = MyOutput(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_optimization_table.csv")
+        res = minimize(problem,
+                algorithm,
+                termination,
+                seed=1,
+                save_history=True,
+                verbose=True,
+                output=outputDisplay)
+
+        # Após a otimização
+        X = res.X
+        F = res.F
+        G = res.G
+
+
+    print(f'X: {X}')
+    print(f'F: {F}')
+    print(f'G: {G}')
+    outputDisplay.finalize()
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Visualização do espaço de design -------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
-
+"""
 plt.figure(figsize=(fig_width_cm, fig_height_cm))
 ax = plt.axes(projection='3d')
 X_int = np.round(X).astype(int)
@@ -754,7 +739,7 @@ sim.simulate(data, sheet, best_Pth)
 # -----------------------------------------------------------------------------------------------------------
 
 # Carregar dados do Excel para plotar potência, corrente e tensão de entrada
-import pandas as pd
+
 input_df = pd.read_excel(data, sheet_name="Log")
 
 time = np.arange(len(input_df))
@@ -1126,3 +1111,4 @@ plt.show(block=True)
 # plt.xlabel('Amostra')
 # plt.tight_layout()
 # plt.show(block=True)
+"""
