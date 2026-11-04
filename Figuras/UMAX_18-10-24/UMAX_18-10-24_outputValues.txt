@@ -1,7 +1,8 @@
-Número de modulos de baterias: 27
-Número de baterias em paralelo: 4
-Número de modulos de supercapacitores: 14
+Número de modulos de baterias: 24
+Número de baterias em paralelo: 5
+Número de modulos de supercapacitores: 19
 Número de supercapacitores em paralelo: 3
-Valor limiar de potência: 1175 kW
-Volume máximo: 1,363.20 L
-VPL (Valor Presente Líquido): R$ 6,308,387.90
+Valor limiar de potência: 1850 kW
+Modelo de bateria selecionado: LFP_40Ah
+Volume máximo: 453.50 L
+VPL (Valor Presente Líquido): R$ 4,302,182.11

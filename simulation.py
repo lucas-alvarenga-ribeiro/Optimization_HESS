@@ -2,7 +2,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from batt import Batt
-from UC import Uc
 from time import sleep
 import tabulate
 
@@ -22,47 +21,42 @@ class Simulation():
         self._p_bat_reject = []
 
         # Dados do supercapacitor
-        self._v_banco_uc = []
-        self._p_uc = []
-        self._i_uc = []
-        self._SoC_UC = []
-        self._p_uc_reject = []
+        self._v_banco_aux = []
+        self._p_aux = []
+        self._i_aux = []
+        self._SoC_aux = []
+        self._p_aux_reject = []
         
         self._p_reject = []
 
-        self._uc = Uc()
+        self._batt_aux = Batt()
         self._batt = Batt()
         # Modo atual da histerese do supercapacitor em relação à bateria
         # "idle"      : sem troca de potência apenas pela histerese
-        # "charge_uc" : bateria carregando o supercapacitor
+        # "charge_aux" : bateria absov
         # "discharge_uc" : supercapacitor descarregando para a bateria
-        self._uc_hyst_mode = "idle"
+        self._aux_hyst_mode = "idle"
         # Contador: segundos em idle com SoC > upper e sem demanda (após N s permite descarga)
         self._idle_upper_nodemand_s = 0
         # True se entramos em discharge_uc sem demanda; não interromper até lower_limit
         self._discharge_started_by_timer = False
-        self._uc_diff = []
-
-    def configFluxUC2Bat(self, SoC_uc_ref : float, BH : float, Taxa : int) -> None:
-        """
-        Configura a histerese do sistema.\n
-        :param float SoC_uc_ref: Setpoint para o estado de carga do supercapacitor. \\n
-        :param float BH: Banda de histerese, em SoC, para o supercapacitor.  \n
-        :param int Taxa: Taxa (1~8C) na qual o SC descarrega na bateria. \n
-        """
-        self._SoC_uc_ref = SoC_uc_ref
+        self._batt_aux_diff = []
+        
+    def configHist_BattAux(self, SoC_aux_ref : float, BH : float) -> None:
+        
+        self._SoC_aux_ref = SoC_aux_ref
         self._BH = BH
-        self._Taxa_ref = Taxa
-        # 2) Controle de histerese entre bateria e supercapacitor
-        self.upper_limit = self._SoC_uc_ref + self._BH
-        self.lower_limit = self._SoC_uc_ref - self._BH
+        # 2) Controle de histerese entre as baterias
+        self.upper_limit = self._SoC_aux_ref + self._BH
+        self.lower_limit = self._SoC_aux_ref - self._BH
         self._hysteresis_flag = 0
-        self._uc_hyst_mode_vector = []
+        self._aux_hyst_mode_vector = []
 
-    def setParam_Batt(self, C: float, Ns: int, Np: int, Nm: int, Vnom: float, SoC: float, T_m: int) -> None:
+    def setParam_Batt(self, C: float, Rcell: float, Ns: int, Np: int, Nm: int, Vnom: float, SoC: float, C_rate_carga: int, C_rate_descarga:int) -> None:
         """
         Configura parâmetros da bateria
         :param float C: Taxa de descarga da bateria (Ah)
+        :param float Rcell: Resistência interna da célula (Ohms)
         :param int Ns: Número de baterias em série
         :param int Np: Número de baterias em paralelo
         :param int Nm: Número de módulos
@@ -73,17 +67,35 @@ class Simulation():
         """
         self._batt_params = {
             'C': C,
+            'Rcell': Rcell,
             'Ns': Ns,
             'Np': Np,
             'Nm': Nm,
             'Vnom': Vnom,
             'SoC': SoC,
-            'T_m': T_m
+            'C_carga': C_rate_carga,
+            'C_descarga': C_rate_descarga
         }
-        self._batt.setParams(C, Ns, Np, Nm, Vnom, SoC, T_m)
+        self._batt.setParams(C, Rcell, Ns, Np, Nm, Vnom, SoC, C_rate_carga, C_rate_descarga)
 
+    def set_Param_Batt_Aux (self, C: float, Rcell: float, Ns: int, Np: int, Nm: int, Vnom: float, SoC: float, C_rate_carga: int, C_rate_descarga:int) -> None:
+        self._batt_params_aux = {
+                    'C': C,
+                    'Rcell': Rcell,
+                    'Ns': Ns,
+                    'Np': Np,
+                    'Nm': Nm,
+                    'Vnom': Vnom,
+                    'SoC': SoC,
+                    'C_carga': C_rate_carga,
+                    'C_descarga': C_rate_descarga
+                }
+        self._batt_aux.setParams(C, Rcell, Ns, Np, Nm, Vnom, SoC, C_rate_carga, C_rate_descarga)
+        
+    """"
     def setParam_UC(self, C: float, Cap_uc: float, Ns: int, Np: int, Nm : int, Vnom: float, SoC: float, T_m: int) -> None:
-        """Configura parâmetros do supercapacitor
+        """"""""
+        Configura parâmetros do supercapacitor
         :param float C: Capacitância do supercapacitor (F)
         :param float Cap_uc: Capacidade do supercapacitor (Ah)
         :param int Ns: Número de supercapacitores em série
@@ -92,7 +104,7 @@ class Simulation():
         :param float Vnom: Tensão nominal do supercapacitor (V)
         :param float SoC: Estado de carga inicial do supercapacitor (%)
         :param int T_m: Multiplicador da capacidade do banco
-        """
+        """"""
         self._uc_params = {
             'C': C,
             'Cap_uc': Cap_uc,
@@ -104,7 +116,7 @@ class Simulation():
             'T_m': T_m
         }
         self._uc.setParams(C, Cap_uc, Ns, Np, Nm, Vnom, SoC, T_m)
-
+    """
     def plot_power_distribution(self, data, powers):
         """Plota distribuição de potência"""
         fig, axs = plt.subplots(figsize=(self.fig_width_cm, self.fig_height_cm), nrows=3, ncols=1, sharex=True)
@@ -128,9 +140,9 @@ class Simulation():
         plt.tight_layout()
         plt.show(block=False)
 
-    def plot_LUT(self):
+    def plot_LUT(self, LUT_path: str):
         """Plota LUT da bateria"""
-        df = pd.read_csv("data\\LUT_batt.csv", sep=";")
+        df = pd.read_csv(LUT_path, sep=";")
         plt.figure(figsize=(self.fig_width_cm, self.fig_height_cm/2))
         plt.plot(100 - df["SoC"], df["Tensao"], color = 'tab:blue', linewidth = 2, label = "LUT Bateria")   
         plt.grid()
@@ -163,17 +175,17 @@ class Simulation():
         axs[2,0].set_xlabel("Tempo [s]")
         
         # Supercapacitor (coluna direita)
-        axs[0,1].step(time, self._SoC_UC, linewidth=2, color="tab:blue", label="SoC UC")
+        axs[0,1].step(time, self._SoC_aux, linewidth=2, color="tab:blue", label="SoC UC")
         axs[0,1].grid()
         axs[0,1].legend(loc="upper right")
         axs[0,1].set_ylabel("SoC [%]")
 
-        axs[1,1].step(time, self._v_banco_uc, linewidth=2, color="tab:orange", label="Tensão UC")
+        axs[1,1].step(time, self._v_banco_aux, linewidth=2, color="tab:orange", label="Tensão UC")
         axs[1,1].grid()
         axs[1,1].legend(loc="upper right")
         axs[1,1].set_ylabel("Tensão [V]")
 
-        axs[2,1].step(time, self._i_uc, linewidth=2, color="tab:green", label="Corrente UC")
+        axs[2,1].step(time, self._i_aux, linewidth=2, color="tab:green", label="Corrente UC")
         axs[2,1].grid()
         axs[2,1].legend(loc="upper right")
         axs[2,1].set_ylabel("Corrente [A]")
@@ -186,7 +198,7 @@ class Simulation():
         """Executa simulação
         :param str data: Caminho para arquivo de dados
         :param str sheet: Nome da planilha
-        :param float threshold: Limiar de potência para distribuição (kW)
+        :param float threshold: Limiar de potência para distribuição (kW)p
         """
         data = pd.read_excel(data, sheet_name=sheet)
         data["Time"] = range(0, len(data))
@@ -201,7 +213,7 @@ class Simulation():
         self._discharge_started_by_timer = False
         # Simulação
         for i, power in enumerate(powers):
-            power_bat, power_uc = self.supervisory_control(power, threshold, step_index=i, total_steps=len(powers))
+            power_bat, power_bat_aux = self.supervisory_control(power, threshold, step_index=i, total_steps=len(powers))
             
             # Atualiza bateria
             i_bat, p_bat_reject_1 = self._batt.setCurrent(power_bat)
@@ -209,11 +221,12 @@ class Simulation():
             p_bat_reject = p_bat_reject_1 + p_bat_reject_2
             
             # Atualiza supercapacitor
-            i_uc, p_uc_reject_1 = self._uc.setCurrent(power_uc)
-            SoC_uc, v_banco_uc, p_uc_reject_2, i_uc, p_uc_actual = self._uc.updateEnergy(i_uc, 1)
-            p_uc_reject = p_uc_reject_1 + p_uc_reject_2
+            i_aux, p_aux_reject_1 = self._batt_aux.setCurrent(power_bat_aux)
+            SoC_aux, v_banco_aux, p_aux_reject_2, i_aux, p_aux_actual = self._batt_aux.updateEnergy(i_aux, 1)
+            p_aux_reject = p_aux_reject_1 + p_aux_reject_2
 
             # Fluxo entre os elementos armazenadores de potência
+            """
             if self._uc_params["Np"] == 0:
                 p_bat_reject = p_bat_reject + p_uc_reject
                 p_uc_reject = 0
@@ -221,15 +234,16 @@ class Simulation():
             if self._batt_params["Np"] == 0:
                 p_uc_reject = p_uc_reject + p_bat_reject
                 p_bat_reject = 0
+            """
 
-            p_reject = p_bat_reject + p_uc_reject
+            p_reject = p_bat_reject + p_aux_reject
 
-            if self._hysteresis_flag == 1 and self._uc._Np != 0:
-                if self._uc_hyst_mode == "idle":
-                    if SoC_uc >= self.upper_limit:
-                        self._uc_hyst_mode = "discharge_uc"
-                    elif SoC_uc <= self.lower_limit:
-                        self._uc_hyst_mode = "charge_uc"
+            if self._hysteresis_flag == 1 and self._batt_aux._Np != 0:
+                if self._aux_hyst_mode == "idle":
+                    if SoC_aux >= self.upper_limit:
+                        self._aux_hyst_mode = "discharge_aux"
+                    elif SoC_aux <= self.lower_limit:
+                        self._aux_hyst_mode = "charge_aux"
 
             
             # Armazena resultados (p_batt_actual e p_uc_actual em W para balanço exato com o barramento)
@@ -239,11 +253,11 @@ class Simulation():
             self._i_bat.append(i_bat)
             self._p_bat_reject.append(p_bat_reject)
 
-            self._SoC_UC.append(SoC_uc)
-            self._p_uc.append(p_uc_actual)  # Potência efetivamente trocada no passo (W)
-            self._i_uc.append(i_uc)
-            self._v_banco_uc.append(v_banco_uc)
-            self._p_uc_reject.append(p_uc_reject)
+            self._SoC_aux.append(SoC_aux)
+            self._p_aux.append(p_aux_actual)  # Potência efetivamente trocada no passo (W)
+            self._i_aux.append(i_aux)
+            self._v_banco_aux.append(v_banco_aux)
+            self._p_aux_reject.append(p_aux_reject)
 
             self._p_reject.append(p_reject)
 
@@ -264,57 +278,61 @@ class Simulation():
         power = power * 1000          # Conversão para W
         threshold = threshold * 1000  # Conversão para W
 
-        SoC_uc = self._uc.getSoC()
+        SoC_aux = self._batt_aux.getSoC()
 
         # 1) Controle de pico de potência no barramento
-        if abs(power) > threshold and self._uc._Np != 0:
-            power_uc = power - threshold if power > 0 else power + threshold
+        if abs(power) > threshold and self._batt_aux._Np != 0:                                #Análise se o sitema precisa o receber ou entregar potência
+            power_bat_aux = power - threshold if power > 0 else power + threshold 
             power_bat = threshold if power > 0 else -threshold
             self._hysteresis_flag = 1
-            return power_bat, power_uc
+            self._aux_hyst_mode_vector.append(self._aux_hyst_mode)
+            return power_bat, power_bat_aux
 
         # Potência de transferência histerese (W): V * I com I = C*Np*Taxa (C-rate em 1/h)
         # Convenção barramento: power_bat/power_uc > 0 = fornece ao barramento, < 0 = recebe
-        V_batt = self._batt.getVoltage()
-        I_transfer = self._batt_params["C"] * self._batt_params["Np"] * self._Taxa_ref  # A
-        diff = V_batt * I_transfer  # W
+        V_batt = self._batt_aux.getVoltage()
+        I_carga = self._batt_params_aux["C"] * self._batt_params_aux["Np"] * self._batt_params_aux["C_carga"]  # A
+        diff_carga = V_batt * I_carga  # W        # Potência de transferência entre bateria e supercapacitor (W)
+        I_descarga = self._batt_params_aux["C"] * self._batt_params_aux["Np"] * self._batt_params_aux["C_descarga"]  # A
+        diff_descarga = V_batt * I_descarga
+        
 
         # Atualiza ou mantém o modo atual da histerese
-        if self._uc_hyst_mode == "charge_uc" and self._uc._Np != 0:
-            if SoC_uc >= self.upper_limit:
+        if self._aux_hyst_mode == "charge_aux" and self._batt_aux._Np != 0:   #Verifica se o supercapacitor está carregando a bateria e determina limite para parar
+            if SoC_aux >= self.upper_limit:
                 # fim do ciclo de carga
-                self._uc_hyst_mode = "idle"
+                self._aux_hyst_mode = "idle"
                 self._hysteresis_flag = 0
             else:
                 # continua carregando UC
-                power_uc = -diff
-                power_bat = power + diff
-                self._uc_hyst_mode_vector.append("charge_uc")
-                self._uc_diff.append(diff)
-                return power_bat, power_uc
+                power_bat_aux = -diff_carga
+                power_bat = power + diff_carga
+                self._aux_hyst_mode_vector.append("charge_aux")
+                self._batt_aux_diff.append(diff_carga)
+                return power_bat, power_bat_aux
 
-        elif self._uc_hyst_mode == "discharge_uc" and self._uc._Np != 0:
-            if SoC_uc <= self.lower_limit:
+        elif self._aux_hyst_mode == "discharge_aux" and self._batt_aux._Np != 0:
+            if SoC_aux <= self.lower_limit:
                 # fim do ciclo de descarga
-                self._uc_hyst_mode = "idle"
+                self._aux_hyst_mode = "idle"
                 self._hysteresis_flag = 0
             else:
                 # continua descarregando UC
-                power_uc = diff
-                power_bat = power - diff
-                self._uc_hyst_mode_vector.append("discharge_uc")
-                self._uc_diff.append(diff)
-                return power_bat, power_uc
+                power_bat_aux = diff_descarga
+                power_bat = power - diff_descarga
+                self._aux_hyst_mode_vector.append("discharge_aux")
+                self._batt_aux_diff.append(diff_descarga)
+                return power_bat, power_bat_aux
 
         # Se está em idle, não faz transferência
-        self._uc_hyst_mode_vector.append("idle")
-        power_uc = 0
+        self._aux_hyst_mode_vector.append("idle")
+        power_bat_aux = 0
         power_bat = power
-        return power_bat, power_uc
+        return power_bat, power_bat_aux
             
     
     
-    def plot_energy_profile(self,df, E_bat, E_uc):
+    def plot_energy_profile(self,df, E_bat, E_aux):
         """Plota perfil de energia"""
         fig, axs = plt.subplots(figsize=(self.fig_width_cm, self.fig_height_cm), nrows=2, ncols=1, sharex=True)
         
@@ -325,7 +343,7 @@ class Simulation():
         axs[0].set_ylabel("SoC [%]")
         
         # Supercapacitor
-        axs[1].plot(E_uc, linewidth=2, color="tab:orange", label="Supercapacitor")
+        axs[1].plot(E_aux, linewidth=2, color="tab:orange", label="Supercapacitor")
         axs[1].grid()
         axs[1].legend(loc="upper right")
         axs[1].set_ylabel("SoC [%]")
@@ -343,6 +361,7 @@ class Simulation():
         data = {
             "Tempo"          : range(0, len(self._SoC)),
             "C_bat"          : self._batt_params['C'],
+            "Rcell_bat"      : self._batt_params['Rcell'],
             "Ns_bat"         : self._batt_params['Ns'],
             "Np_bat"         : self._batt_params['Np'],
             "Nm_bat"         : self._batt_params['Nm'],
@@ -352,16 +371,19 @@ class Simulation():
             'v_banco_bat': self._v_banco_bat,
             'i_bat': self._i_bat,
             'p_bat_reject': self._p_bat_reject,
-            'C_uc': self._uc_params['C'],
-            'Ns_uc': self._uc_params['Ns'],
-            'Np_uc': self._uc_params['Np'],
-            'Nm_uc': self._uc_params['Nm'],
-            'Vnom_uc': self._uc_params['Vnom'],
-            'SoC_inicial_uc': self._uc_params['SoC'],
-            'SoC_UC': self._SoC_UC,
-            'v_banco_uc': self._v_banco_uc,
-            'i_uc': self._i_uc,
-            'p_uc_reject': self._p_uc_reject,
+            'C_aux': self._batt_params_aux['C'],
+            'Ns_aux': self._batt_params_aux['Ns'],
+            'Np_aux': self._batt_params_aux['Np'],
+            'Nm_aux': self._batt_params_aux['Nm'],
+            'Vnom_aux': self._batt_params_aux['Vnom'],
+            'SoC_inicial_aux': self._batt_params_aux['SoC'],
+            'SoC_aux': self._SoC_aux,
+            'Rcell_aux': self._batt_params_aux['Rcell'],
+            'C_carga_aux': self._batt_params_aux['C_carga'],
+            'C_descarga_aux': self._batt_params_aux['C_descarga'],
+            'v_banco_aux': self._v_banco_aux,
+            'i_aux': self._i_aux,
+            'p_aux_reject': self._p_aux_reject,
             'p_reject': self._p_reject
         }
         
@@ -375,8 +397,8 @@ class Simulation():
         """
         tabela = tabulate.tabulate([["Limiar", threshold],
                                     ["Energia máxima bateria (Wh)", self._batt.getTotalEnergy()],
-                                    ["Energia máxima supercapacitor (Wh)", self._uc.getTotalEnergy()],
-                                    ["Potência Rejeitada", ]])
+                                    ["Energia máxima bateria auxiliar (Wh)", self._batt_aux.getTotalEnergy()],
+                                    ["Potência Rejeitada", self._p_reject]])
         
 if __name__ == "__main__":
     plt.rcParams.update({
@@ -398,30 +420,33 @@ if __name__ == "__main__":
     # --------------------------------------------------------------------------
     # ------------------------- Definições do problema -------------------------
     # --------------------------------------------------------------------------
-    SoC_uc_ref = 50
-    BH = 2
+    SoC_aux_ref = 50
+    BH = 0.05
     Taxa = 0.5
     Pth = 1750
 
     params_batt = {
         "C"     :   40,
+        "R_cell":  0.7e-3,
         "Ns"    :   16,
         "Np"    :   5,
         "Nm"    :   30,
         "Vnom"  :   3.25,
         "SoC"   :   50,
-        "T_m"   :   6
+        "C_carga"   :   6,
+        "C_descarga" : 6
     }
 
-    params_uc = {
-        "C"         :   3400, 
-        "Cap_uc"    :   280, 
-        "Ns"        :   16, 
-        "Np"        :   3, 
-        "Nm"        :   15, 
-        "Vnom"      :   3, 
-        "SoC"       :   50, 
-        "T_m"       :   8
+    params_batt_aux = {
+        "C"     :   40,
+        "R_cell":  0.7e-3,
+        "Ns"    :   16,
+        "Np"    :   5,
+        "Nm"    :   30,
+        "Vnom"  :   3.25,
+        "SoC"   :   50,
+        "C_carga"   :   6,
+        "C_descarga" : 6
     }
 
     # --------------------------------------------------------------------------
@@ -429,23 +454,27 @@ if __name__ == "__main__":
     # --------------------------------------------------------------------------
 
     sim = Simulation()
-    sim.configFluxUC2Bat(SoC_uc_ref, BH, Taxa)
+    sim.configHist_BattAux(SoC_aux_ref, BH)
     sim.setParam_Batt(C     =   params_batt["C"], 
+                      Rcell =   params_batt["R_cell"],
                       Ns    =   params_batt["Ns"], 
                       Np    =   params_batt["Np"], 
                       Nm    =   params_batt["Nm"], 
                       Vnom  =   params_batt["Vnom"], 
                       SoC   =   params_batt["SoC"], 
-                      T_m   =   params_batt["T_m"])
+                      C_rate_carga   =   params_batt["C_carga"],
+                      C_rate_descarga = params_batt["C_descarga"])
     
-    sim.setParam_UC(C       =   params_uc["C"], 
-                    Cap_uc  =   params_uc["Cap_uc"], 
-                    Ns      =   params_uc["Ns"], 
-                    Np      =   params_uc["Np"], 
-                    Nm      =   params_uc["Nm"], 
-                    Vnom    =   params_uc["Vnom"], 
-                    SoC     =   params_uc["SoC"], 
-                    T_m     =   params_uc["T_m"])
+    sim.set_Param_Batt_Aux(C      =   params_batt_aux["C"], 
+                           Rcell  =   params_batt_aux["R_cell"],
+                           Ns     =   params_batt_aux["Ns"], 
+                           Np     =   params_batt_aux["Np"], 
+                           Nm     =   params_batt_aux["Nm"], 
+                           Vnom   =   params_batt_aux["Vnom"], 
+                           SoC    =   params_batt_aux["SoC"], 
+                           C_rate_carga    =   params_batt_aux["C_carga"],
+                           C_rate_descarga =   params_batt_aux["C_descarga"])
+    
     sim.simulate(data, sheet, Pth)
 
 
@@ -508,7 +537,7 @@ if __name__ == "__main__":
 
     # Potência em kW
     p_batt_kw = np.array(sim._p_batt) / 1e3
-    p_uc_kw = np.array(sim._p_uc) / 1e3
+    p_bat_aux_kw = np.array(sim._p_aux) / 1e3
 
     color_power = "tab:green" 
     color_voltage = "tab:blue"
@@ -538,15 +567,15 @@ if __name__ == "__main__":
 
     # -------   supercapacitor     -------------
     axs[0, 1].set_title("Supercapacitor")
-    axs[0, 1].plot(time, p_uc_kw, linewidth = 2, label='Potência Supercapacitor', color=color_power)
+    axs[0, 1].plot(time, p_bat_aux_kw, linewidth = 2, label='Potência Bateria Auxiliar', color=color_power)
     axs[0, 1].legend(loc = 'upper right')
     axs[0, 1].grid()
 
-    axs[1, 1].plot(time, sim._i_uc, linewidth = 2, label='Corrente Supercapacitor', color=color_current)
+    axs[1, 1].plot(time, sim._i_aux, linewidth = 2, label='Corrente Bateria Auxiliar', color=color_current)
     axs[1, 1].legend(loc = 'upper right')
     axs[1, 1].grid()
 
-    axs[2, 1].plot(time, np.array(sim._p_uc_reject), linewidth = 2, label='Potência Rejeitada Supercapacitor [kW]', color=color_reject_power)
+    axs[2, 1].plot(time, np.array(sim._p_aux_reject), linewidth = 2, label='Potência Rejeitada Supercapacitor [kW]', color=color_reject_power)
     axs[2, 1].legend(loc = 'upper right')
     axs[2, 1].set_xlabel("Tempo [s]")
     axs[2, 1].grid()
@@ -568,7 +597,7 @@ if __name__ == "__main__":
     axs[0, 0].legend(loc='upper right')
     axs[0, 0].grid()
 
-    axs[0, 1].plot(time, sim._SoC_UC, linewidth = 2, color=color_soc, label='SoC Supercapacitor')
+    axs[0, 1].plot(time, sim._SoC_aux, linewidth = 2, color=color_soc, label='SoC Bateria Auxiliar')
     axs[0, 1].legend(loc='upper right')
     axs[0, 1].grid()
 
@@ -578,7 +607,7 @@ if __name__ == "__main__":
     axs[1, 0].legend(loc='upper right')
     axs[1, 0].grid()
 
-    axs[1, 1].plot(time, sim._v_banco_uc, linewidth = 2, color=color_voltage, label='Tensão Supercapacitor')
+    axs[1, 1].plot(time, sim._v_banco_aux, linewidth = 2, color=color_voltage, label='Tensão Bateria Auxiliar')
     axs[1, 1].legend(loc='upper right')
     axs[1, 1].grid()
 
@@ -590,13 +619,13 @@ if __name__ == "__main__":
     axs[2, 0].set_xlim([0, time[-1]])
     axs[2, 0].grid()
 
-    axs[2, 1].plot(time, sim._i_uc, linewidth = 2, color=color_current, label='Corrente Supercapacitor')
+    axs[2, 1].plot(time, sim._i_aux, linewidth = 2, color=color_current, label='Corrente Bateria Auxiliar')
     axs[2, 1].set_xlabel('Tempo [s]')
     axs[2, 1].legend(loc='upper right')
     axs[2, 1].set_xlim([0, time[-1]])
     axs[2, 1].grid()
 
-    plt.suptitle('SoC, Tensão e Corrente: Bateria (esq.) x Supercapacitor (dir.)')
+    plt.suptitle('SoC, Tensão e Corrente: Bateria (esq.) x Bateria Auxiliar (dir.)')
     plt.tight_layout()
     plt.savefig(diretorio_figuras + f"_04_soc_voltage_current.pdf", bbox_inches='tight')
     plt.show(block=False)
@@ -607,9 +636,9 @@ if __name__ == "__main__":
     # ---------------------------------------------- Comparação entre a potência do diesel e a gerenciada ------------------------------------------------
     # ----------------------------------------------------------------------------------------------------------------------------------------------------
     plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-    p_rej_total = np.array(sim._p_bat_reject) + np.array(sim._p_uc_reject)
-    pot_simulada = (np.array(sim._p_batt) + np.array(sim._p_uc) + np.array(p_rej_total) * 1000) / 1e3  # kW
-    pot_simulada_2 = (np.array(sim._p_batt) + np.array(sim._p_uc)) / 1e3  # kW
+    p_rej_total = np.array(sim._p_bat_reject) + np.array(sim._p_aux_reject)
+    pot_simulada = (np.array(sim._p_batt) + np.array(sim._p_aux) + np.array(p_rej_total) * 1000) / 1e3  # kW
+    pot_simulada_2 = (np.array(sim._p_batt) + np.array(sim._p_aux)) / 1e3  # kW
     plt.plot(time, powers_diesel / 1000, label='Potência Sistema (Diesel) [kW]', color='black')
     plt.plot(time, pot_simulada, label='Potência Administrada Total [kW]', color='tab:blue', linestyle='--')
     plt.plot(time, pot_simulada_2, label='Potência Bateria + Supercapacitor [kW]', color='tab:red', linestyle='--')
@@ -625,7 +654,7 @@ if __name__ == "__main__":
 
 
     plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-    plt.plot(sim._uc_hyst_mode_vector, linewidth = 2, color='tab:blue', label='Modo de Histerese')
+    plt.plot(sim._aux_hyst_mode_vector, linewidth = 2, color='tab:blue', label='Modo de Histerese')
     plt.ylabel('Modo de Histerese')
     plt.xlabel('Tempo [s]')
     plt.title('Modo de Histerese')

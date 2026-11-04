@@ -14,18 +14,24 @@ class Batt():
         self._Nm = 24
         self._Vnom = 3.25
         self._SoC = 50
+        self._LUT_path = "data\\LUT_batt.csv"
         self._min_SoC = 20                                                                          # SoC mínimo permitido (%) - DoD 20%
         self._max_SoC = 80                                                                          # SoC máximo permitido (%) - DoD 20%
-        self._v_cel = self.LUT(self._SoC)                                                           # Calcula v_cel usando o SoC inicial
-        self._v_banco = self._v_cel * self._Ns * self._Nm
+        self._v_cel = self.LUT(self._SoC, self._LUT_path)                                           # Calcula v_cel usando o SoC inicial
+        self._v_ocv = self._v_cel * self._Ns * self._Nm
         self._total_energy = (self._Np * self._C) * (self._Ns * self._Nm * self._Vnom)              # Wh
         self._SoC_Energy = (self._SoC/100) * self._total_energy
-        self._C_rate = 6  # Valor padrão para taxa C
+        self._C_rate_carga = 6  # Valor padrão para taxa C
+        self._C_rate_descarga = 6
+        self._r_cell = 0.7e-3  # Resistência interna da célula (Ohms)
+        self._r_banco = self._r_cell * (self._Ns * self._Nm) / self._Np
+        self._v_banco = self._v_ocv - self._r_banco * 0  # Inicialmente, corrente é zero
 
-    def setParams(self, C: float, Ns: int, Np: int, Nm: int, Vnom: float, SoC: float, C_rate: float = None, DoD: float = None) -> None:
+    def setParams(self, C: float, Rcell: float, Ns: int, Np: int, Nm: int, Vnom: float, SoC: float, C_rate_carga: float = None, C_rate_descarga: float = None, DoD: float = None) -> None:
         """
         Configura os parâmetros da bateria
         :param float C: Taxa de descarga da bateria (Ah)
+        :param float Rcell: Resistência interna da célula (Ohms)
         :param int Ns: Número de baterias em série
         :param int Np: Número de baterias em paralelo
         :param int Nm: Número de módulos
@@ -35,38 +41,44 @@ class Batt():
         :param float DoD: Depth of Discharge desejado (opcional, 0.0 a 1.0)
         :raises ValueError: Se os parâmetros forem inválidos
         """
-        if any(x <= 0 for x in [C, Ns, Nm, Vnom]):
+        if any(x <= 0 for x in [C, Rcell, Ns, Nm, Vnom]):
             raise ValueError("Todos os parâmetros devem ser positivos")
         
         if not 0 <= SoC <= 100:
             raise ValueError("SoC deve estar entre 0% e 100%")
 
         self._C = C
+        self._r_cell = Rcell
+        self._r_banco = self._r_cell * (Ns * Nm)/Np
         self._Ns = Ns
         self._Np = Np
         self._Nm = Nm
         self._Vnom = Vnom
         self._SoC = SoC
-        self._v_cel = self.LUT(self._SoC)  # Calcula v_cel usando o SoC inicial
-        self._v_banco = self._v_cel * self._Ns * self._Nm
+        self._v_cel = self.LUT(self._SoC, self._LUT_path)  # Calcula v_cel usando o SoC inicial
+        self._v_ocv = self._v_cel * self._Ns * self._Nm
         self._total_energy = (Np * C) * (Ns * Nm * Vnom)  # Wh
         self._SoC_Energy = (SoC/100) * self._total_energy
-        if C_rate is not None:
-            self._C_rate = C_rate
+        self._v_banco = self._v_ocv - self._r_banco * 0  # Inicialmente, corrente é zero
+        if C_rate_carga is not None:
+            self._C_rate_carga = C_rate_carga
+        if C_rate_descarga is not None:
+            self._C_rate_descarga = C_rate_descarga
         if DoD is not None:
             self.setDoD(DoD)
         else:
             # Configura DoD padrão de 20% se não especificado
             self.setDoD(0.8)
 
-    def LUT(self, SoC: float) -> float:
+    def LUT(self, SoC: float, LUT_path: str) -> float:
         """
         Calcula a tensão da bateria de acordo com o SoC usando interpolação
         :param float SoC: Estado de carga da célula (%)
+        :param str LUT_path: Caminho para o arquivo de lookup table
         :return float: Tensão correspondente (V)
         """
         try:
-            df = pd.read_csv("data\\LUT_batt.csv", sep=";")
+            df = pd.read_csv(LUT_path, sep=";")
             df["SoC"] = 100 - df["SoC"]  # Inverte SoC para corresponder ao padrão de carga
             indice_proximo = (df['SoC'] - SoC).abs().idxmin() #encontra o ponto mais próximo
             tensao = df.loc[indice_proximo, 'Tensao'] #encontra o valor na tabela
@@ -90,14 +102,19 @@ class Batt():
         :return float i_sat: Corrente por célula (A)
         :return float p_reject: Potência rejeitada (kW)
         """
+    
         if self._Np == 0:
             i_sat = 0
             p_reject = power / 1000
         else:
-            i = power / self._v_banco
-            i_sat = np.clip(i, -self._C_rate * self._Np * self._C, self._C_rate * self._Np * self._C)       # Limita corrente usando taxa C
-            i_reject = i - i_sat                                                                            # Calcula corrente rejeitada
-            p_reject = (i_reject * self._v_banco)/1000                                                      # Calcula potência rejeitada
+            delta = self._v_ocv**2 - 4 * self._r_banco * power
+            if delta < 0:
+                delta = 0.0  # Evita raiz de número negativo (saturação de potência)
+            i = (self._v_ocv - np.sqrt(delta)) / (2 * self._r_banco)  # Corrente calculada usando a equação quadrática
+            i_sat = np.clip(i, -self._C_rate_carga * self._Np * self._C, self._C_rate_descarga * self._Np * self._C)       # Limita corrente usando taxa C
+            i_reject = i - i_sat  
+            v_banco = self._v_ocv - self._r_banco * i_sat                                                 # Cálcula tensão do banco                          # Calcula corrente rejeitada
+            p_reject = (i_reject * v_banco)/1000                                                      # Calcula potência rejeitada
         return i_sat, p_reject
 
     def getTotalEnergy(self) -> float:
@@ -122,14 +139,13 @@ class Batt():
         # Calcula variação de energia
         if self._Np == 0:
             self.SoC = 0
-            self._v_banco = 0
+            self._v_ocv = 0
             p_reject = 0
             i_bat = 0
             p_actual = 0.0
         else:
             charge = -1 * current * dt / 3600                                   # Converte para horas
-            energy_variation = self._v_banco * charge                           # Variacao de energia em Wh
-            
+            energy_variation = self._v_ocv * charge                           # Variacao de energia em Wh                             
             # Calcula nova energia
             new_energy = self._SoC_Energy + energy_variation                    # Nova energia, considerando a variacao
             
@@ -140,14 +156,16 @@ class Batt():
                 (self._max_SoC/100) * self._total_energy
             )
             p_reject = -1* (((new_energy - clip_energy) * 3600) / dt) / 1000                         # Potência rejeitada (kW)
-            i_bat = -1 * (((clip_energy - self._SoC_Energy) * 3600) / dt) / self._v_banco
+            i_bat = -1 * (((clip_energy - self._SoC_Energy) * 3600) / dt) / self._v_ocv
 
             # Potência efetiva no passo (W): usa variação de energia para balanço exato (evita usar V_final)
             p_actual = - (clip_energy - self._SoC_Energy) * 3600 / dt
 
             self._SoC_Energy = clip_energy
             self._SoC = self.Energy2SoC(clip_energy)
-            self._v_banco = self._Ns * self._Nm * self.LUT(self._SoC)
+            v_cel = self.LUT(self._SoC, self._LUT_path)  # Atualiza v_cel usando o SoC atualizado
+            self._v_ocv = v_cel * self._Ns * self._Nm
+            self._v_banco = self._v_ocv - self._r_banco * i_bat
             self._i_bat = i_bat
         
         return self._SoC, self._v_banco, p_reject, i_bat, p_actual
@@ -171,23 +189,29 @@ class Batt():
     #     corrente_maxima_absorvivel = ( self._Np * 40 ) - self._i_bat
     #     corrente_minima_absorvivel = (-1 * self._Np * 40) - self._i_bat
 
-    #     corrente_desejada = (Ed * dt) / self._v_banco 
+    #     corrente_desejada = (Ed * dt) / self._v_ocv 
 
     #     clip_current = np.clip(corrente_desejada, corrente_minima_absorvivel, corrente_maxima_absorvivel)
 
-    #     clip_energy_corrente = (self._v_banco * clip_current) / dt
+    #     clip_energy_corrente = (self._v_ocv * clip_current) / dt
 
     #     return min([clip_energy, clip_energy_corrente])
 
 
-    def setC_rate(self, C_rate: float) -> None:
+    def setC_rate(self, C_rate_carga: float, C_rate_descarga: float) -> None:
         """
         Define a taxa C máxima permitida para a bateria.
         :param float C_rate: Taxa C desejada
         """
-        if C_rate <= 0:
+        if C_rate_carga <= 0:
             raise ValueError("A taxa C deve ser positiva.")
-        self._C_rate = C_rate
+        if C_rate_descarga <= 0:
+            raise ValueError("A taxa C deve ser positiva.")
+        self._C_rate_carga = C_rate_carga
+        self._C_rate_descarga = C_rate_descarga
+
+    def getSoC(self) -> float:
+            return self._SoC
 
     def setDoD(self, DoD: float) -> None:
         """
@@ -275,7 +299,7 @@ class Batt():
 
 if __name__ == "__main__":
     batt = Batt()
-    batt.setParams(40, 16, 3, 24, 3.25, 50, 10)
+    batt.setParams(40, 0.7e-3, 16, 3, 24, 3.25, 50, 10)
     batt.plotBatterySoCGraph()
     batt.batteryHealth(2000, 5500)
     batt.plotBatteryHealthGraph()

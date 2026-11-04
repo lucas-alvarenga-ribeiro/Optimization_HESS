@@ -1,18 +1,74 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from time import sleep
 import pandas as pd
-from math import floor
 
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.util.display.output import Output
-from pymoo.util.display.column import Column
-from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.config import Config
 Config.warnings['not_compiled'] = False
 
+from pymoo.algorithms.soo.nonconvex.ga import GA
+from pymoo.optimize import minimize
+
+from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.termination import get_termination
+import pickle
+
 from simulation import Simulation
+
+modelos_bateria = {
+    0: {
+        "nome": "LFP_40Ah",
+        "quimica": "LFP",
+        "capacidade_Ah": 40,
+        "tensao_nominal_V": 3.2,
+        "tensao_maxima_V": 3.65,
+        "c_rate_carga": 6,
+        "c_rate_descarga": 6,
+        "preco_usd": 36.62,
+        "volume_m3": 0.596e-3,    #L, Volume da célula?
+        "peso_kg": 1.085,       #kg
+        "vida_ciclos": 4000,
+        "SOC_inicial": 20,
+        "R_cell": 0.7e-3, # Ohms, resistência interna da célula
+        "LUT": "data\\LUT_batt.csv"
+    },
+    1: {
+        "nome": "LFP_60Ah",                 #Genérico para teste
+        "quimica": "LFP",
+        "capacidade_Ah": 60,
+        "tensao_nominal_V": 3.2,
+        "tensao_maxima_V": 3.65,
+        "c_rate_carga": 4,
+        "c_rate_descarga":4,
+        "preco_usd": 28.5,
+        "volume_m3": 0.754e-3,    #L
+        "peso_kg": 1.5,       #kg
+        "vida_ciclos": 2000,  
+        "SOC_inicial": 20,
+        "R_cell": 1e-3, # Ohms, resistência interna da célula
+        "LUT": "data\\LUT_batt.csv"
+    },
+    2: {
+        "nome": "Na_50Ah",                 #Genérico para teste
+        "quimica": "Na",
+        "capacidade_Ah": 50,
+        "tensao_nominal_V": 2.85,
+        "tensao_maxima_V": 3.5,
+        "c_rate_carga": 0.5,
+        "c_rate_descarga": 0.5,
+        "preco_usd": 27.5,
+        "volume_m3": 0.955e-3,    #L
+        "peso_kg": 1.65,       #kg
+        "vida_ciclos": 8000,  
+        "SOC_inicial": 20,
+        "R_cell": 0.5e-3, # Ohms, resistência interna da célula
+        "LUT": "data\\LUT_batt.csv"
+    }
+}
 
 DEBUG = 0
 
@@ -28,8 +84,7 @@ plt.rcParams.update({
     "ytick.labelsize": 16,
 })
 
-fig_width_cm = 24/2.4
-fig_height_cm = 18/2.4
+
 
 # Parâmetros financeiros e operacionais
 preco_diesel = 5.78  # R$/litro
@@ -52,9 +107,6 @@ taxa_disponibilidade = 0.8  # 80% de disponibilidade diária
 
 dias_por_mes = 30  # Considerando 30 dias por mês
 
-# Degradação dos componentes
-ciclos_bateria_vida = 5300  # ciclos até 80% da capacidade (Baseado no datasheet da bateria)
-horas_supercap_vida = 1000000  # horas até 80% da capacidade (Baseado no datasheet do supercapacitor)
 
 # Parâmetros financeiros para VPL
 horizonte_analise_meses = 60  # 5 anos
@@ -63,12 +115,6 @@ horizonte_analise_meses = 60  # 5 anos
 taxa_desconto_anual = 0.10                                          # Taxa minima de atratividade anual 
 
 taxa_desconto_mensal = (1 + taxa_desconto_anual) ** (1/12) - 1      # TMA mensal calculada a partir da TMA anual
-
-# Caracteristicas bateria
-vb_nom = 3.25
-vb_max = 3.65
-
-vuc_max = 3
 
 # Definições relativas a otmização
 step_pth = 25                                                                                   # Step entre as potências de limiares simuladas
@@ -79,41 +125,51 @@ max_pth = round((potencia_de_limiar_max - potencia_de_limiar_min) / step_pth) + 
 
 
 Ns_b = 16                                                           # Número de baterias em serie
-Ns_uc = 16                                                          # Número de supercapacitores em serie
+Ns_aux = 16                                                          # Número de supercapacitores em serie
 
-min_Nm_uc = 11                                                      # Número minimo de modulos de supercapacitor
-max_Nm_uc = 31                                                      # Número máximo de modulos de supercapacitor (Não extrapolar 1500 V)
-min_Np_uc = 0                                                       # Número minimo de supercapacitores em paralelo
-max_Np_uc = 7                                                       # Número máximo de supercapacitores em paralelo
+min_Nm_aux = 11                                                      # Número minimo de modulos de supercapacitor
+max_Nm_aux = 31                                                      # Número máximo de modulos de supercapacitor (Não extrapolar 1500 V)
+min_Np_aux = 1                                                       # Número minimo de supercapacitores em paralelo
+max_Np_aux = 7                                                       # Número máximo de supercapacitores em paralelo
 
 min_Nm_b = 15                                                       # Número minimo de modulos de bateria em serie                                                  
 max_Nm_b = 28                                                       # Número maximo de modulos de bateria em serie (Não extrapolar 1500 V)
-min_Np_b = 0                                                        # Número mínimo de baterias em paralelo
-max_Np_b = 8                                                       # Número máximo de baterias em paralelo
+min_Np_b = 1                                                        # Número mínimo de ramos
+max_Np_b = 8                                                       # Número máximo de ramos
 
 i_SoC_Bat = 20
-i_SoC_UC = 3
+i_SoC_aux = 3
 
 # Definição dos parametros do problema
 cot_dolar = 5.30                                                    # Valor sugerido pelo Guilherme
 # Pb = 28.00                                                          # Preço da bateria em dolares (Fonte: data_sources.xlsx)
 # Puc = 53.75                                                         # Preço do supercapacitor em dolares (Fonte: data_sources.xlsx)
-Pb= 12.8                                                            # Preço da bateria em dolares (Sugestão Guilherme)
-Puc= 9.75                                                           # Preço do supercapacitor em dolares (Sugestão Guilherme)
+#Pb= 12.8                                                            # Preço da bateria em dolares (Sugestão Guilherme)
+#Puc= 9.75                                                           # Preço do supercapacitor em dolares (Sugestão Guilherme)
 
-Vb = 0.596                                                          # Volume da bateria em L (Fonte: data_sources.xlsx)
-Vuc = 0.496                                                         # Volume do supercapacitor em L (Fonte: data_sources.xlsx)
+#Vb = 0.596                                                          # Volume da bateria em L (Fonte: data_sources.xlsx)
+#Vuc = 0.496                                                         # Volume do supercapacitor em L (Fonte: data_sources.xlsx)
 volume_maximo = (np.pi * (26/2)**2 * 65 * 1e-6) * 41000             # Volume máximo hipotetico, em L. pi * r^2 * h <- volume da bateria de referencia, vezes o numero maximo de baterias de referencias.
 
-Wb = 1.060                                                          # Peso da bateria em kg (Fonte: data_sources.xlsx)
-Wuc = 0.460                                                         # Peso do supercapacitor em kg (Fonte: data_sources.xlsx)
+#Wb = 1.060                                                          # Peso da bateria em kg (Fonte: data_sources.xlsx)
+#Wuc = 0.460                                                         # Peso do supercapacitor em kg (Fonte: data_sources.xlsx)
 
 
 
-Cap_b = 40.0                                                        # Capacidade da bateria em Ah
-T_xb = 6                                                            # Multiplicador da capacidade da bateria
-Cap_uc = 280.0                                                      # Capacidade do supercapacitor em Ah
-T_xuc = 8                                                           # Multiplicador da capacidade do supercapacitor
+#Cap_b = 40.0                                                        # Capacidade da bateria em Ah
+#T_xb = 6                                                            # Multiplicador da capacidade da bateria
+#Cap_uc = 280.0                                                      # Capacidade do supercapacitor em Ah
+#T_xuc = 8                                                           # Multiplicador da capacidade do supercapacitor
+
+
+# Variáveis para otimização
+SoC_aux_ref = 50
+BH = 4
+Taxa = 0.5
+arquivo = "UMAX_18-10-24.xlsx"
+diretorio_figuras = "Figuras/" + arquivo.split(".")[0]
+data = "data/" + arquivo
+sheet = "Log"
 
 
 # Definição do problema de otimização
@@ -152,38 +208,14 @@ class MyOutput(Output):
 
     def __init__(self, optimization_output):
         super().__init__()
-        self.data = []
-        self.last_ideal = None
+        self.data = []  
         self.optimization_output = optimization_output
 
     def update(self, algorithm):
         super().update(algorithm)
 
-        # ideal point atual
-        ideal = algorithm.opt.get("F").min(axis=0) # Menor valor ótimo de cada coluna da FOB
 
-        # calcula eps
-        if self.last_ideal is None:
-            eps = 0.0
-        else:
-            eps = float(np.linalg.norm(ideal - self.last_ideal)) # Distância
-
-        # indicador baseado na mudança do ideal
-        if self.last_ideal is None:
-            indicator = "f"
-        else:
-            if eps == 0:
-                indicator = "f"
-            elif np.all(ideal <= self.last_ideal): # Verifica se o ponto ideal atual é menor que o último
-                indicator = "ideal"
-            else:
-                indicator = "nadir"
-
-        # atualiza memória
-        self.last_ideal = ideal
-
-        # número de soluções não dominadas
-        n_nds = len(algorithm.opt)
+        # Se o sistema é mono objetivo, F só tem uma coluna e não há necessidade de acompanhar soluções não dominadas.
 
         # restrições
         CV = algorithm.opt.get("CV")  # CV se refere as violações de restrições
@@ -194,11 +226,8 @@ class MyOutput(Output):
         row = {
             "n_gen": algorithm.n_gen,
             "n_evals": algorithm.evaluator.n_eval,
-            "n_nds": n_nds,
             "cv_min": cv_min,
             "cv_avg": cv_avg,
-            "eps": eps,
-            "indicator": indicator
         }
 
         # salva no histórico
@@ -216,19 +245,19 @@ class MyOutput(Output):
 class MyProblem(ElementwiseProblem):
 
     def __init__(self):
-        super().__init__(n_var=5,                                                               # Nm_b, Np_b, Nm_uc, Np_uc e Pth
+        super().__init__(n_var=7,                                                               # Nm_b, Np_b, Nm_uc, Np_uc e Pth
                          n_obj=1,                                                               # VPL
                          n_ieq_constr=1,                                                        # Restrição de volume para os elementos armazenadores
-                         xl=np.array([min_Nm_b, min_Np_b, min_Nm_uc, min_Np_uc, min_pth]),      # Mínimo de 1 para cada elemento armazenador e 0 para potencia (0 kW)
-                         xu=np.array([max_Nm_b, max_Np_b, max_Nm_uc, max_Np_uc, max_pth]),      # Máximo de 10 para elementos armazenados e 80 para potência (2000 kW)
+                         xl=np.array([min_Nm_b, min_Np_b, min_Nm_aux, min_Np_aux, min_pth, 0, 0]),      # Mínimo de 1 para cada elemento armazenador e 0 para potencia (0 kW)
+                         xu=np.array([max_Nm_b, max_Np_b, max_Nm_aux, max_Np_aux, max_pth, len(modelos_bateria)-1, len(modelos_bateria)-1]),      # Máximo de 10 para elementos armazenados e 80 para potência (2000 kW)
                          type_var=np.int64)                                                     # Especificando que as variáveis são inteiros
         self.simulation_cache = {}
         self._preco_diesel = preco_diesel
         self._cot_dolar = cot_dolar
         self._preco_razao_elepot = preco_razao_elepot
-        self._Pb = Pb
-        self._Puc = Puc
-        self._T_xb = T_xb # C-rate
+        #self._Pb = modelos_bateria[0]["preço_usd"]
+        #self._Puc = Puc
+        #self._T_xb = T_xb # C-rate
 
     def setData(self, data: str, sheet: str):
         self._data = data
@@ -246,77 +275,83 @@ class MyProblem(ElementwiseProblem):
         self._preco_diesel = dict["Preco Diesel"]
         self._cot_dolar = dict["Cotacao Dolar"]
         self._preco_razao_elepot = dict["Preco Razao Elepot"]
-        self._Pb = dict["Preco Bat"]
-        self._Puc = dict["Preco UC"]
-        self._T_xb = dict["C-rate"]
+        #self._Pb = dict["Preco Bat"]
+        #self._Puc = dict["Preco UC"]
+        #self._T_xb = dict["C-rate"]
 
         print(f"""CONFERENCIA: Preço Diesel         : {self._preco_diesel};
                                Cotação Dolar        : {self._cot_dolar};
                                Preço Elepot:        : {self._preco_razao_elepot};   Corrigido Dolar: {self._preco_razao_elepot * self._cot_dolar}
-                               Preço bateria        : {self._Pb};                   Corrigido Dolar: {self._Pb * self._cot_dolar};   
-                               Preço Supercapacitor : {self._Puc};                  Corrigido Dolar: {self._Puc * self._cot_dolar};
-                               C-Rate Bateria       : {self._T_xb}
                                """)
+        """
+        Retirados
+        1. Preço da bateria, pois o preço da bateria é definido pelo modelo de bateria selecionado: Preço bateria        : {self._Pb};                   Corrigido Dolar: {self._Pb * self._cot_dolar};   
+        2. C-rate da bateria, pois o c-rate da bateria é definido pelo modelo de bateria selecionado: C-Rate Bateria       : {self._T_xb}
+        3. Preço do Supercapacitor
+        """
         # sleep(10)
 
-    def configFluxUC2Bat(self, SoC_uc_ref = 50.0 , BH = 2.0, Taxa = 0.01) -> None:
+    def configHist_BattAux(self, SoC_aux_ref = 50.0 , BH = 2.0) -> None:
         """
         Configura a histerese do sistema.\n
         :param float SoC_uc_ref: Setpoint para o estado de carga do supercapacitor. \\n
         :param float BH: Banda de histerese, em SoC, para o supercapacitor.  \n
         :param int Taxa: Taxa (1~8C) na qual o SC descarrega na bateria. \n
         """
-        self._SoC_uc_ref = SoC_uc_ref
+        self._SoC_aux_ref = SoC_aux_ref
         self._BH = BH
-        self._Taxa_ref = Taxa
 
     def _evaluate(self, x, out, *args, **kwargs):
         Nm_b = int(round(x[0]))                                 # Numero de modulos de baterias
         Np_b = int(round(x[1]))                                 # Número de baterias em paralelo
-        Nm_uc = int(round(x[2]))                                # Número de modulos de supercapacitor
-        Np_uc = int(round(x[3]))                                # Número de supercapacitores em paralelo
+        Nm_aux = int(round(x[2]))                                # Número de modulos de supercapacitor
+        Np_aux = int(round(x[3]))                                # Número de supercapacitores em paralelo
         Pth = step_pth * int(round(x[4]))                       # Variavel relativa a potencia
 
+        modelo_b = int(round(x[5]))                       # Índice do modelo de bateria selecionado
+        modelo_b_aux = int(round(x[6]))
+        modelo = modelos_bateria[modelo_b]                # modelo selecionado da bateria
+        modelo_aux = modelos_bateria[modelo_b_aux]
         # Cálculo do número total de componentes
         total_baterias = Np_b * Nm_b * Ns_b
-        total_supercaps = Np_uc * Nm_uc * Ns_uc
+        total_bat_aux = Np_aux * Nm_aux * Ns_aux
 
         # Calcula o volume total dos elementos armazenadores
-        g1 = (Vb * total_baterias) + (Vuc * total_supercaps)
+        g1 = (modelo['volume_m3'] * total_baterias) + (modelo_aux['volume_m3'] * total_bat_aux)
         G =  g1 - volume_maximo
 
 
         # Cálculo do custo inicial (investimento)
-        custo_inicial = (total_baterias * self._Pb * self._cot_dolar) + (total_supercaps * self._Puc * self._cot_dolar) + (total_elepot * self._preco_razao_elepot * self._cot_dolar)
+        custo_inicial = (total_baterias * modelo['preco_usd'] * self._cot_dolar) + (total_bat_aux * modelo_aux['preco_usd'] * self._cot_dolar) + (total_elepot * self._preco_razao_elepot * self._cot_dolar)
 
         # Simulação para calcular energia rejeitada
-        cache_key = (Nm_b, Np_b, Nm_uc, Np_uc, Pth)
+        cache_key = (Nm_b, Np_b, Nm_aux, Np_aux, Pth, modelo_b, modelo_b_aux)
         if cache_key not in self.simulation_cache:
             sim = Simulation()
-            sim.setParam_Batt(C=Cap_b, Ns=Ns_b, Np=Np_b, Nm=Nm_b, Vnom=3.25, SoC=i_SoC_Bat, T_m = self._T_xb)
-            sim.setParam_UC(C=3140, Cap_uc=Cap_uc, Ns=Ns_uc, Np=Np_uc, Nm=Nm_uc, Vnom=3, SoC=i_SoC_UC, T_m=T_xuc)
-            sim.configFluxUC2Bat(self._SoC_uc_ref, self._BH, self._Taxa_ref)
+            sim.setParam_Batt(C=modelo['capacidade_Ah'], Rcell=modelo['R_cell'], Ns=Ns_b, Np=Np_b, Nm=Nm_b, Vnom=modelo['tensao_nominal_V'], SoC=modelo['SOC_inicial'], C_rate_carga = modelo['c_rate_carga'], C_rate_descarga = modelo['c_rate_descarga'])
+            sim.set_Param_Batt_Aux(C=modelo_aux['capacidade_Ah'], Rcell=modelo_aux['R_cell'], Ns=Ns_aux, Np=Np_aux, Nm=Nm_aux, Vnom=modelo_aux['tensao_nominal_V'], SoC=modelo_aux['SOC_inicial'], C_rate_carga = modelo_aux['c_rate_carga'], C_rate_descarga = modelo_aux['c_rate_descarga'])
+            sim.configHist_BattAux(self._SoC_aux_ref, self._BH)
             sim.simulate(self._data, self._sheet, threshold=Pth)
             energia_rejeitada = sum(sim._p_reject) / 3600  # Wh
             # Energia absorvida é a soma das potências negativas (absorvidas) pelos sistemas
             p_batt_arr = np.array(sim._p_batt)
-            p_uc_arr = np.array(sim._p_uc)
-            uf_diff = np.array(sim._uc_diff) #?
+            p_aux_arr = np.array(sim._p_aux)
+            uf_diff = np.array(sim._batt_aux_diff) #?
             energia_absorvida = (
                 np.abs(np.sum(p_batt_arr[p_batt_arr < 0])) +
-                np.abs(np.sum(p_uc_arr[p_uc_arr < 0])) - 
+                np.abs(np.sum(p_aux_arr[p_aux_arr < 0])) - 
                 np.abs(np.sum(uf_diff))
             ) / 3600  # Wh
-            self.simulation_cache[cache_key] = (energia_rejeitada, energia_absorvida, sim._SoC, sim._SoC_UC)
+            self.simulation_cache[cache_key] = (energia_rejeitada, energia_absorvida, sim._SoC, sim._SoC_aux)
         else:
             sim = Simulation()
-            sim.setParam_Batt(C=Cap_b, Ns=Ns_b, Np=Np_b, Nm=Nm_b, Vnom=3.25, SoC=i_SoC_Bat, T_m = self._T_xb)
-            sim.setParam_UC(C=3140, Cap_uc=Cap_uc, Ns=Ns_uc, Np=Np_uc, Nm=Nm_uc, Vnom=3, SoC=i_SoC_UC, T_m=T_xuc)
-            energia_rejeitada, energia_absorvida, sim._SoC, sim._SoC_UC = self.simulation_cache[cache_key]
+            sim.setParam_Batt(C=modelo['capacidade_Ah'], Rcell=modelo['R_cell'], Ns=Ns_b, Np=Np_b, Nm=Nm_b, Vnom=modelo['tensao_nominal_V'], SoC=modelo['SOC_inicial'], C_rate_carga = modelo['c_rate_carga'], C_rate_descarga = modelo['c_rate_descarga'])
+            sim.set_Param_Batt_Aux(C=modelo_aux['capacidade_Ah'], Rcell=modelo_aux['R_cell'], Ns=Ns_aux, Np=Np_aux, Nm=Nm_aux, Vnom=modelo_aux['tensao_nominal_V'], SoC=modelo_aux['SOC_inicial'], C_rate_carga = modelo_aux['c_rate_carga'], C_rate_descarga = modelo_aux['c_rate_descarga'])
+            energia_rejeitada, energia_absorvida, sim._SoC, sim._SoC_aux = self.simulation_cache[cache_key]
 
         # Energia absorvida por ciclo (Wh)
         energia_absorvida_ciclo = energia_absorvida
-        print(f"Energia absorvida por ciclo (Nm_b: {Nm_b}, Np_b: {Np_b}, Nm_uc: {Nm_uc} Np_uc: {Np_uc}, Pth: {Pth}): {energia_absorvida_ciclo} Wh")
+        print(f"Energia absorvida por ciclo (Nm_b: {Nm_b}, Np_b: {Np_b}, Nm_aux: {Nm_aux} Np_aux: {Np_aux}, Pth: {Pth}, Modelo da Bateria Principal: {modelo['nome']}, Modelo da Bateria Auxiliar: {modelo_aux['nome']}): {energia_absorvida_ciclo} Wh")
         # Número de ciclos por dia e por mês
         horas_operacao_dia = 24 * taxa_disponibilidade
         ciclos_por_dia = horas_operacao_dia / self._duracao_ciclo_operacao_hora
@@ -333,12 +368,13 @@ class MyProblem(ElementwiseProblem):
         fluxo_caixa = []
         saude_bat = []                     
         troca_bat = []                     
-        saude_uc = []                      
-        troca_uc = []                      
+        saude_aux = []                      
+        troca_aux = []                      
         mes = 0
         numero_ciclos_batt_total = 0
-        custo_bateria = total_baterias * self._Pb * self._cot_dolar
-        custo_supercap = total_supercaps * self._Puc * self._cot_dolar
+        numero_ciclos_batt_total_aux = 0
+        custo_bateria = total_baterias * modelo['preco_usd'] * self._cot_dolar
+        custo_aux = total_bat_aux * modelo_aux['preco_usd'] * self._cot_dolar
 
         # Analise financeira mensal
         while mes < horizonte_analise_meses:
@@ -347,36 +383,37 @@ class MyProblem(ElementwiseProblem):
                 fluxo_caixa.append(-custo_inicial)      # Investimento inicial
                 saude_bat.append(100)                 # Saude da bateria em 100% no mes 0
                 troca_bat.append(0)                     # Nao a troca da bateria no mes 0 (saida ja realizada no custo inicial)
-                saude_uc.append(1)                      # Saude do UC em 100% no mes 0
-                troca_uc.append(0)                      # Nao ha troca de UC no mes 0 (saida ja realizada no custo inicial)
+                saude_aux.append(100)                      # Saude do UC em 100% no mes 0
+                troca_aux.append(0)                      # Nao ha troca de UC no mes 0 (saida ja realizada no custo inicial)
 
             else:
                 balanco_mes += economia_mensal
 
                 # Verifica substituição da bateria
                 numero_ciclos_batt_total +=  round(((max(sim._SoC) - min(sim._SoC)) / 100) * self.ciclos_por_mes)   # Calcula o numero de Full Equivalent Cycles (FEC) já realizados.
-                if (numero_ciclos_batt_total / ciclos_bateria_vida) - 1 > sum(troca_bat):                           # Necessário realizar a troca da bateria
-                    saude_bat_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total % ciclos_bateria_vida, ciclos_bateria_vida)
+                if (numero_ciclos_batt_total / modelo['vida_ciclos']) - 1 > sum(troca_bat):                           # Necessário realizar a troca da bateria
+                    saude_bat_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total % modelo['vida_ciclos'], modelo['vida_ciclos'])
                     saude_bat.append(saude_bat_mensal)
                     troca_bat.append(1)
                     balanco_mes += -custo_bateria
                     # Se a bateria ultrapassou a contagem de ciclos da vida útil deve ser trocada
                 else:
-                    saude_bat_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total % ciclos_bateria_vida, ciclos_bateria_vida)
+                    saude_bat_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total % modelo['vida_ciclos'], modelo['vida_ciclos'])
                     saude_bat.append(saude_bat_mensal)
                     troca_bat.append(0)
 
-                # Verifica substituição do supercapacitor
-                saude_uc_mensal = saude_uc[-1] - (0.2*self.ciclos_por_mes*self._duracao_ciclo_operacao_hora/horas_supercap_vida)
-                if saude_uc_mensal <= 0.8:
-                    saude_uc_mensal = 1
-                    saude_uc.append(saude_uc_mensal)
-                    troca_uc.append(1)
-                    balanco_mes += -custo_supercap
+                # Verifica substituição da segunda bateria
+                numero_ciclos_batt_total_aux +=  round(((max(sim._SoC_aux) - min(sim._SoC_aux)) / 100) * self.ciclos_por_mes)
+                if (numero_ciclos_batt_total_aux / modelo_aux['vida_ciclos']) - 1 > sum(troca_aux):  
+                    saude_aux_mensal = sim._batt_aux.batteryHealth(numero_ciclos_batt_total_aux % modelo_aux['vida_ciclos'], modelo_aux['vida_ciclos'])
+                    saude_aux.append(saude_aux_mensal)
+                    troca_aux.append(1)
+                    balanco_mes += -custo_aux
                     #Se o supercapacitor estiver com sapude abaixo de 80% é trocado por um novo
                 else:
-                    saude_uc.append(saude_uc_mensal)
-                    troca_uc.append(0)
+                    saude_aux_mensal = sim._batt.batteryHealth(numero_ciclos_batt_total_aux % modelo_aux['vida_ciclos'], modelo_aux['vida_ciclos'])
+                    saude_aux.append(saude_aux_mensal)
+                    troca_aux.append(0)
 
         
                 fluxo_caixa.append(balanco_mes)
@@ -387,7 +424,7 @@ class MyProblem(ElementwiseProblem):
         for i, fc in enumerate(fluxo_caixa):
             vpl += fc / ((1 + taxa_desconto_mensal) ** i)
 
-        print(f"VPL (Nm_b: {Nm_b}, Np_b: {Np_b}, Nm_uc: {Nm_uc} Np_uc: {Np_uc}, Pth: {Pth}): {vpl}")
+        print(f"VPL (Nm_b: {Nm_b}, Np_b: {Np_b}, Nm_aux: {Nm_aux} Np_aux: {Np_aux}, Pth: {Pth}, Modelo Principal: {modelo['nome']}, Modelo Auxiliar: {modelo_aux['nome']}): {vpl}")
         print(f'Volume Total: {g1}')
         print(f'---------------------------------------------------------')
 
@@ -399,686 +436,245 @@ class MyProblem(ElementwiseProblem):
         if not hasattr(self, 'melhor_vpl') or (vpl > self.melhor_vpl and G < 0):
             self.Nm_b = Nm_b
             self.Np_b = Np_b
-            self.Nm_uc = Nm_uc
-            self.Np_uc = Np_uc
+            self.Nm_aux = Nm_aux
+            self.Np_aux = Np_aux
             self.Pth = Pth
             self.melhor_vpl = vpl
             self.volume_total = g1
             self.saude_bat = saude_bat
             self.troca_bat = troca_bat
-            self.saude_uc = saude_uc
-            self.troca_uc = troca_uc
+            self.saude_aux = saude_aux
+            self.troca_aux = troca_aux
             self.melhor_fluxo_caixa = fluxo_caixa.copy()
+            self.modelo_b = modelo_b
+            self.nome_modelo_b = modelo['nome']
+            self.nome_modelo_aux = modelo_aux['nome']
+
+
+class Resultados:
+    def __init__(self):
+        self.X = None
+        self.F = None
+        self.G = None
+        self.problem = None
+
+    def set_results(self, X, F, G, problem):
+        self.X = X
+        self.F = F
+        self.G = G
+        self.problem = problem
+
+    def retorna_resultados(self):
+        return {
+            "X": self.X,
+            "F": self.F,
+            "G": self.G,
+            "melhor_vpl": self.problem.melhor_vpl,
+            "volume_total": self.problem.volume_total,
+            "saude_bat": self.problem.saude_bat,
+            "saude_aux": self.problem.saude_aux,
+            "troca_bat": self.problem.troca_bat,
+            "xl": self.problem.xl,
+            "xu": self.problem.xu,
+            "melhor_fluxo_caixa": self.problem.melhor_fluxo_caixa,     # Variáveis de problem necessárias para Plot, caso necessário, adicionar mais
+        }
+
+
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
 # ----------------------------------------------- Otimização ------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------------------------------------
-SoC_uc_ref = 50
-BH = 4
-Taxa = 0.5
-problem = MyProblem()
-problem.configFluxUC2Bat(SoC_uc_ref, BH, Taxa)
-arquivo = "UMAX_18-10-24.xlsx"
-diretorio_figuras = "Figuras/" + arquivo.split(".")[0]
-os.makedirs(diretorio_figuras, exist_ok=True)
-data = "data/" + arquivo
-sheet = "Log"
-problem.setData(data, sheet)
-
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.operators.sampling.rnd import IntegerRandomSampling
-from pymoo.operators.crossover.sbx import SBX
-from pymoo.operators.mutation.pm import PM
-
-algorithm = NSGA2(
-    pop_size=20,
-    n_offsprings=20,
-    sampling=IntegerRandomSampling(),
-    crossover=SBX(prob=0.8, eta=10),
-    mutation=PM(eta=10, prob=0.4),
-    eliminate_duplicates=True
-)
-
-from pymoo.termination import get_termination
-
-termination = get_termination("n_gen", 1)
-
-from pymoo.optimize import minimize
-
-if DEBUG == 1:
-    X = np.array([[1.67568827 , 2.00387028 , 2.42676082],
-                  [2.45828371 , 2.16749542 , 2.29327055],
-                  [2.48089061 , 2.00954174 , 2.29311394],
-                  [1.68066717 , 2.00387028 , 2.42676082],
-                  [2.3824625  , 1.72352808 , 2.00388331],
-                  [2.46946474 , 2.01153336 , 2.3417322 ],
-                  [1.80650082 , 2.16749542 , 2.28653366],
-                  [2.42323793 , 1.71690139 , 1.68014845],
-                  [2.46766855 , 2.01030525 , 2.2843379 ],
-                  [2.48441901 , 1.71674928 , 1.67953821],
-                  [1.66524314 , 2.15307047 , 2.28653366],
-                  [2.41622185 , 2.03898575 , 2.27603183],
-                  [2.46373699 , 2.00926662 , 2.29311394],
-                  [2.42026014 , 2.27297904 , 2.29195702],
-                  [1.72671404 , 2.07843162 , 2.27633423],
-                  [2.4163137  , 2.01700668 , 2.29311394],
-                  [2.36949422 , 2.07832437 , 2.2792785 ],
-                  [2.47444365 , 2.01153336 , 2.3423704 ],
-                  [2.41139047 , 1.73282528 , 1.68065134],
-                  [1.6689999  , 2.16749542 , 2.42979231],
-                  [2.4697575  , 1.73621974 , 2.34483868],
-                  [2.46946455 , 2.01062817 , 2.28950294],
-                  [1.66916977 , 2.16749542 , 2.28717186],
-                  [2.46713047 , 2.01001253 , 2.29311394],
-                  [2.46946439 , 2.0297654  , 2.43276159],
-                  [2.46713047 , 2.01008903 , 2.29311394],
-                  [2.46948572 , 2.07401983 , 2.29519769],
-                  [1.68789503 , 2.15607932 , 1.67230267],
-                  [2.41622185 , 2.03923487 , 1.6801506 ],
-                  [2.48134673 , 2.01033768 , 2.28198642],
-                  [2.48198928 , 1.73621974 , 2.29436782],
-                  [1.65552358 , 2.28751669 , 2.29436782],
-                  [2.41451112 , 2.07752873 , 2.29439125],
-                  [2.48169737 , 2.01153336 , 2.29372633],
-                  [2.46881361 , 2.00976048 , 2.34335867],
-                  [2.49832873 , 2.07843162 , 2.27633423],
-                  [1.65569346 , 2.28751669 , 2.29436782],
-                  [1.70103911 , 2.31993647 , 1.66291752],
-                  [2.46883301 , 2.00967934 , 2.29349918],
-                  [2.48441901 , 1.71674928 , 1.6801506 ],
-                  [1.63209465 , 1.74098441 , 2.28551734],
-                  [2.46713047 , 2.01033815 , 1.69723271],
-                  [1.6689999  , 2.16749542 , 2.28653366],
-                  [2.46975665 , 1.73621974 , 2.2944346 ],
-                  [1.66524314 , 2.16749542 , 2.29327055],
-                  [2.46881427 , 2.02905398 , 2.34555423],
-                  [2.46946474 , 2.01153336 , 2.3423704 ],
-                  [1.6689999  , 2.16749542 , 2.28717186],
-                  [2.47644084 , 2.29618761 , 2.29436782],
-                  [2.46832116 , 1.83287873 , 2.28198642]])
-    F = np.array([[-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403],
-                  [-1035859.12159403]])
-    problem.saude_bat = [1, 0.9565283018867925,
-                         0.913056603773585,
-                         0.8695849056603775,
-                         0.82611320754717,
-                         1,
-                         0.9565283018867925,
-                         0.913056603773585,
-                         0.8695849056603775,
-                         0.82611320754717,
-                         1,
-                         0.9565283018867925]
-    problem.saude_uc = [1,
-                        0.9998848,
-                        0.9997696,
-                        0.9996544,
-                        0.9995392000000001,
-                        0.9994240000000001,
-                        0.9993088000000001,
-                        0.9991936000000001,
-                        0.9990784000000001,
-                        0.9989632000000002,
-                        0.9988480000000002,
-                        0.9987328000000002]
-    problem.melhor_fluxo_caixa = [-2431162.56,
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(100808.06971927418),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(340362.6297192742),
-                                  np.float64(100808.06971927418),
-                                  np.float64(340362.6297192742)]
-
-else:
-    outputDisplay = MyOutput(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_optimization_table.csv")
-    res = minimize(problem,
-            algorithm,
-            termination,
-            seed=1,
-            save_history=True,
-            verbose=True,
-            output=outputDisplay)
-
-    # Após a otimização
-    X = res.X
-    F = res.F
-    G = res.G
-
-
-print(f'X: {X}')
-print(f'F: {F}')
-print(f'G: {G}')
-outputDisplay.finalize()
-
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Visualização do espaço de design -------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-
-plt.figure(figsize=(fig_width_cm, fig_height_cm))
-ax = plt.axes(projection='3d')
-X_int = np.round(X).astype(int)
-try:
-    ax.scatter(X_int[:, 0], X_int[:, 1], X_int[:, 2], s=30, facecolors='r', edgecolors='r', zorder=3)
-except Exception as e:
-    ax.scatter(X_int[0], X_int[1], X_int[2], s=30, facecolors='r', edgecolors='r', zorder=3)
-    print("Solução unica!")
-ax.set_xlabel('Número de Baterias em Paralelo')
-ax.set_ylabel('Número de Supercapacitores em Paralelo')
-ax.set_zlabel("Potência de Limiar")
-ax.set_title("Espaço de Design")
-ax.grid(zorder=1)
-ax.set_xticks(np.arange(1, 11, 1))
-ax.set_yticks(np.arange(1, 11, 1))
-ax.set_xlim(problem.xl[0]-1, problem.xu[0]+1)
-ax.set_ylim(problem.xl[1]-1, problem.xu[1]+1)
-ax.set_zlim(problem.xl[2]-100, problem.xu[2]+100)
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_01_design_space.pdf", bbox_inches='tight')
-plt.show(block=False)
-
-
-# Imprimir resultados
-print("\nResultados da Otimização:")
-print("------------------------")
-for i in range(min(10, len(X))):  # Mostrar as 10 melhores soluções
-    print(f"\nSolução {i+1}:")
-    try:
-        print(f"Número de modulos de baterias: {int(round(X[i,0]))}")
-        print(f"Número de baterias em paralelo: {int(round(X[i,1]))}")
-        print(f"Número de modulos de supercapacitores: {int(round(X[i,2]))}")
-        print(f"Número de supercapacitores em paralelo: {int(round(X[i,3]))}")
-        print(f"Valor limiar de potência: {step_pth * int(round(X[i,4]))}")
-        print(f'Volume ocupado: {(G[i,0] + volume_maximo):,.2f}')        
-        print(f"VPL (Valor Presente Líquido): R$ {(-F[i,0]):,.2f}")
-        with open(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_outputValues.txt", "w") as text_file:
-            text_file.write(f"Número de modulos de baterias: {int(round(X[i,0]))}\n")
-            text_file.write(f"Número de baterias em paralelo: {int(round(X[i,1]))}\n")
-            text_file.write(f"Número de modulos de supercapacitores: {int(round(X[i,2]))}\n")
-            text_file.write(f"Número de supercapacitores em paralelo: {int(round(X[i,3]))}\n")
-            text_file.write(f"Valor limiar de potência: {step_pth * int(round(X[i,4]))} kW\n")
-            text_file.write(f"Volume Ocupado: {(G[i,0] + volume_maximo):,.2f} L \n")            
-            text_file.write(f"VPL (Valor Presente Líquido): R$ {(-F[i,0]):,.2f}\n")
-    except:
-        print(f"Número de modulos de baterias: {int(round(X[0]))}")
-        print(f"Número de baterias em paralelo: {int(round(X[1]))}")
-        print(f"Número de modulos de supercapacitores: {int(round(X[2]))}")
-        print(f"Número de supercapacitores em paralelo: {int(round(X[3]))}")
-        print(f"Valor limiar de potência: {step_pth * int(round(X[4]))}")
-        print(f'Volume ocupado: {(G[0] + volume_maximo):,.2f}')        
-        print(f"VPL (Valor Presente Líquido): R$ {(-F[0]):,.2f}")
-        with open(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_outputValues.txt", "w") as text_file:
-            text_file.write(f"Número de modulos de baterias: {int(round(X[0]))}\n")
-            text_file.write(f"Número de baterias em paralelo: {int(round(X[1]))}\n")
-            text_file.write(f"Número de modulos de supercapacitores: {int(round(X[2]))}\n")
-            text_file.write(f"Número de supercapacitores em paralelo: {int(round(X[3]))}\n")
-            text_file.write(f"Valor limiar de potência: {step_pth * int(round(X[4]))} kW\n")
-            text_file.write(f"Volume máximo: {(G[0] + volume_maximo):,.2f} L\n")            
-            text_file.write(f"VPL (Valor Presente Líquido): R$ {(-F[0]):,.2f}\n")
-            
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Seleção da melhor solução ------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-try:
-    idx_best = np.argmin(F[:, 0])  # Menor valor negativo de F => maior VPL
-    best_Nm_b = int(round(X[idx_best, 0]))
-    best_Np_b = int(round(X[idx_best, 1]))
-    best_Nm_uc = int(round(X[idx_best, 2]))
-    best_Np_uc = int(round(X[idx_best, 3]))
-    best_Pth = step_pth * int(round(X[idx_best, 4]))
-except:
-    idx_best = np.argmin(F[0])  # Menor valor negativo de F => maior VPL
-    best_Nm_b = int(round(X[0]))
-    best_Np_b = int(round(X[1]))
-    best_Nm_uc = int(round(X[2]))
-    best_Np_uc = int(round(X[3]))
-    best_Pth = step_pth * int(round(X[4]))
-
-
-# Rodar a simulação para a melhor solução
-sim = Simulation()
-sim.configFluxUC2Bat(SoC_uc_ref, BH, Taxa)
-sim.setParam_Batt(C=Cap_b, Ns=Ns_b, Np=best_Np_b, Nm=best_Nm_b, Vnom=3.2, SoC=50, T_m=T_xb)
-sim.setParam_UC(C=3400, Cap_uc=Cap_uc, Ns=Ns_uc, Np=best_Np_uc, Nm=best_Nm_uc, Vnom=3, SoC=50, T_m=T_xuc)
-sim.simulate(data, sheet, best_Pth)
-
-# -----------------------------------------------------------------------------------------------------------
-# ---------------------- Força simulacao com determinado valor ----------------------------------------------
-# -----------------------------------------------------------------------------------------------------------
-# sim = Simulation()
-# sim.setParam_Batt(C=Cap_b, Ns=Ns_b, Np=5, Nm=Nm_b, Vnom=3.2, SoC=50, T_m=T_xb)
-# sim.setParam_UC(C=3400, Cap_uc=Cap_uc, Ns=Ns_uc, Np=2, Nm=Nm_uc, Vnom=3, SoC=50, T_m=T_xuc)
-# sim.simulate(data, sheet, 1400)
-# -----------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------
-
-# Carregar dados do Excel para plotar potência, corrente e tensão de entrada
-import pandas as pd
-input_df = pd.read_excel(data, sheet_name="Log")
-
-time = np.arange(len(input_df))
-
-# Potência do diesel (entrada real do sistema)
-try:
-    powers_diesel = input_df["fa08_m2amps"] * input_df["fa00_altoutvolts"]  # em Watts
-    corrente = input_df["fa08_m2amps"]
-    tensao = input_df["fa00_altoutvolts"]
-except:
-    powers_diesel = input_df["ai_04_m2amps"] * input_df["ai_11_altoutvolts"]  # em Watts
-    corrente = input_df["ai_04_m2amps"]
-    tensao = tensao = input_df["ai_11_altoutvolts"]
-
-
-
-# Ajustar a simulação para usar a potência do diesel como entrada
-
-
-# O restante do código permanece igual, usando os resultados da simulação
-
-# # Carregar dados do Excel para plotar potência, corrente e tensão de entrada
-# import pandas as pd
-# input_df = pd.read_excel(data, sheet_name="Log")
-
-# time = np.arange(len(input_df))
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico de Potência, Corrente e Tensão de Entrada -------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------  
-
-fig, axs = plt.subplots(3, 1, figsize=(fig_width_cm, fig_height_cm*1.2), sharex=True)
-axs[0].set_title('Dados de Entrada do Ciclo (Arquivo Excel)')
-axs[0].plot(time, tensao, linewidth = 2, label='Tensão [V]', color='tab:blue')
-axs[0].set_ylabel('Tensão [V]')
-axs[0].grid()
-axs[0].legend(loc='upper right')
-
-axs[1].plot(time, corrente, linewidth = 2, label='Corrente [A]', color='tab:orange')
-axs[1].set_ylabel('Corrente [A]')
-axs[1].grid()
-axs[1].legend(loc='upper right')
-
-axs[2].plot(time, powers_diesel/1000, linewidth = 2, label='Potência [kW]', color = "tab:green")
-axs[2].set_ylabel('Potência [kW]')
-axs[2].set_xlabel('Tempo [s]')
-axs[2].set_xlim(0, len(input_df))
-axs[2].grid()
-axs[2].legend(loc="upper right")
-
-
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_02_power_current_voltage.pdf", bbox_inches='tight')
-plt.show(block=False)
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico de Potência e Corrente usando subplots -------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-
-sim_time = np.arange(len(sim._p_batt))
-fig, axs = plt.subplots(3, 2, figsize=(fig_width_cm*1.5, fig_height_cm*1.2), sharex=True)
-
-# Potência em kW
-p_batt_kw = np.array(sim._p_batt) / 1e3
-p_uc_kw = np.array(sim._p_uc) / 1e3
-
-color_power = "tab:green" 
-color_voltage = "tab:blue"
-color_current = "tab:orange"
-color_reject_power = "tab:red"
-color_soc = "tab:purple"
-
-# -------   bateria     -------------
-axs[0, 0].set_title("Bateria")
-axs[0, 0].plot(time, p_batt_kw, linewidth = 2, label='Potência Bateria', color=color_power)
-axs[0, 0].legend(loc = 'upper right')
-axs[0, 0].set_ylabel("Potência [kW]")
-axs[0, 0].grid()
-
-axs[1, 0].plot(time, sim._i_bat, linewidth = 2, label='Corrente Bateria', color=color_current)
-axs[1, 0].legend(loc = 'upper right')
-axs[1, 0].set_ylabel("Corrente [A]")
-axs[1, 0].grid()
-
-axs[2, 0].plot(time, np.array(sim._p_bat_reject), linewidth = 2, label='Potência Rejeitada Bateria [kW]', color=color_reject_power)
-axs[2, 0].legend(loc = 'upper right')
-axs[2, 0].set_ylabel("Potência")
-axs[2, 0].set_xlabel("Tempo [s]")
-axs[2, 0].grid()
-axs[2, 0].set_xlim([0, sim_time[-1]])
-
-
-# -------   supercapacitor     -------------
-axs[0, 1].set_title("Supercapacitor")
-axs[0, 1].plot(time, p_uc_kw, linewidth = 2, label='Potência Supercapacitor', color=color_power)
-axs[0, 1].legend(loc = 'upper right')
-axs[0, 1].grid()
-
-axs[1, 1].plot(time, sim._i_uc, linewidth = 2, label='Corrente Supercapacitor', color=color_current)
-axs[1, 1].legend(loc = 'upper right')
-axs[1, 1].grid()
-
-axs[2, 1].plot(time, np.array(sim._p_uc_reject), linewidth = 2, label='Potência Rejeitada Supercapacitor [kW]', color=color_reject_power)
-axs[2, 1].legend(loc = 'upper right')
-axs[2, 1].set_xlabel("Tempo [s]")
-axs[2, 1].grid()
-axs[2, 1].set_xlim([0, time[-1]])
-
-# # --- BATERIA ---
-# axs[0].set_ylabel('Potência Bateria [kW]', color=color_batt)
-# l1 = axs[0].plot(sim_time, p_batt_kw, label='Potência Bateria [kW]', color=color_batt)
-# l_bat_rej = axs[0].plot(sim_time, np.array(sim._p_bat_reject), label='Potência Rejeitada Bateria [kW]', color='tab:red', linestyle=':')
-# axs[0].tick_params(axis='y', labelcolor=color_batt)
-
-# ax2_0 = axs[0].twinx()
-# l2 = ax2_0.plot(sim_time, sim._i_bat, label='Corrente Bateria [A]', color=color_batt_i)
-# ax2_0.set_ylabel('Corrente Bateria [A]', color=color_batt_i)
-# ax2_0.tick_params(axis='y', labelcolor=color_batt_i)
-
-# lns0 = l1 + l_bat_rej + l2
-# labs0 = [l.get_label() for l in lns0]
-# axs[0].legend(lns0, labs0, loc='upper right')
-# axs[0].set_title('Bateria')
-# axs[0].grid()
-
-# # --- SUPERCAPACITOR ---
-# axs[1].set_ylabel('Potência Supercapacitor [kW]', color=color_uc)
-# l3 = axs[1].plot(sim_time, p_uc_kw, label='Potência Supercapacitor [kW]', color=color_uc)
-# l_uc_rej = axs[1].plot(sim_time, np.array(sim._p_uc_reject), label='Potência Rejeitada Supercapacitor [kW]', color='tab:purple', linestyle=':')
-# axs[1].tick_params(axis='y', labelcolor=color_uc)
-
-# ax2_1 = axs[1].twinx()
-# l4 = ax2_1.plot(sim_time, sim._i_uc, label='Corrente Supercapacitor [A]', color=color_uc_i)
-# ax2_1.set_ylabel('Corrente Supercapacitor [A]', color=color_uc_i)
-# ax2_1.tick_params(axis='y', labelcolor=color_uc_i)
-
-# lns1 = l3 + l_uc_rej + l4
-# labs1 = [l.get_label() for l in lns1]
-# axs[1].legend(lns1, labs1, loc='upper right')
-# axs[1].set_title('Supercapacitor')
-# axs[1].grid()
-
-# # --- POTÊNCIA REJEITADA TOTAL ---
-
-# axs[2].plot(sim_time, p_rej_total, label='Potência Rejeitada Total [kW]', color='tab:orange')
-# axs[2].set_ylabel('Potência Rejeitada Total [kW]')
-# axs[2].set_xlabel('Amostra')
-# axs[2].legend(loc='upper right')
-# axs[2].set_title('Potência Rejeitada Total')
-# axs[2].grid()
-
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_03_power_current_voltage_subplots.pdf", bbox_inches='tight')    
-plt.show(block=False)
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico SoC, Tensão e Corrente: Bateria x Supercapacitor -------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-
-fig, axs = plt.subplots(3, 2, figsize=(fig_width_cm*1.5, fig_height_cm*1.2), sharex=True)
-
-# Linha 1: SoC
-axs[0, 0].plot(time, sim._SoC, linewidth = 2, color=color_soc, label='SoC Bateria')
-axs[0, 0].set_ylabel(r'SoC [\%]')
-axs[0, 0].legend(loc='upper right')
-axs[0, 0].grid()
-
-axs[0, 1].plot(time, sim._SoC_UC, linewidth = 2, color=color_soc, label='SoC Supercapacitor')
-axs[0, 1].legend(loc='upper right')
-axs[0, 1].grid()
-
-# Linha 2: Tensão
-axs[1, 0].plot(time, sim._v_banco_bat, linewidth = 2, color=color_voltage, label='Tensão Bateria')
-axs[1, 0].set_ylabel('Tensão [V]')
-axs[1, 0].legend(loc='upper right')
-axs[1, 0].grid()
-
-axs[1, 1].plot(time, sim._v_banco_uc, linewidth = 2, color=color_voltage, label='Tensão Supercapacitor')
-axs[1, 1].legend(loc='upper right')
-axs[1, 1].grid()
-
-# Linha 3: Corrente
-axs[2, 0].plot(time, sim._i_bat, linewidth = 2, color=color_current, label='Corrente Bateria')
-axs[2, 0].set_ylabel('Corrente [A]')
-axs[2, 0].set_xlabel('Tempo [s]')
-axs[2, 0].legend(loc='upper right')
-axs[2, 0].set_xlim([0, time[-1]])
-axs[2, 0].grid()
-
-axs[2, 1].plot(time, sim._i_uc, linewidth = 2, color=color_current, label='Corrente Supercapacitor')
-axs[2, 1].set_xlabel('Tempo [s]')
-axs[2, 1].legend(loc='upper right')
-axs[2, 1].set_xlim([0, time[-1]])
-axs[2, 1].grid()
-
-plt.suptitle('SoC, Tensão e Corrente: Bateria (esq.) x Supercapacitor (dir.)')
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_04_soc_voltage_current.pdf", bbox_inches='tight')
-plt.show(block=False)
-
-
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ---------------------------------------------- Comparação entre a potência do diesel e a gerenciada ------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-p_rej_total = np.array(sim._p_bat_reject) + np.array(sim._p_uc_reject)
-# Potência medida do sistema (entrada)
-
-
-
-
-
-
-
-# try:
-#     pot_sistema = input_df["fa08_m2amps"] * input_df["fa00_altoutvolts"] / 1000 # em Watts
-# except:
-#     pot_sistema = input_df["ai_04_m2amps"] * input_df["ai_11_altoutvolts"] / 1000 # em Watts
-
-
-
-
-
-
-
-
-
-# pot_sistema = input_df["fa08_m2amps"] * input_df["fa00_altoutvolts"] / 1000  # kW
-plt.plot(time, powers_diesel / 1000, label='Potência Sistema (Diesel) [kW]', color='black')
-
-# Soma das potências simuladas (bateria + supercapacitor + rejeitada)
-pot_simulada = (np.array(sim._p_batt) + np.array(sim._p_uc) + np.array(p_rej_total) * 1000) / 1e3  # kW
-pot_simulada_2 = (np.array(sim._p_batt) + np.array(sim._p_uc)) / 1e3  # kW
-plt.plot(time, pot_simulada, label='Potência Administrada Total [kW]', color='tab:blue', linestyle='--')
-plt.plot(time, pot_simulada_2, label='Potência Bateria + Supercapacitor [kW]', color='tab:red', linestyle='--')
-
-plt.ylabel('Potência [kW]')
-plt.xlabel('Tempo [s]')
-plt.title('Comparação: Potência do Sistema vs. Simulação')
-plt.legend(loc='upper right')
-plt.grid()
-plt.xlim([0, time[-1]])
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_05_power_comparison.pdf", bbox_inches='tight')
-plt.show(block=False)
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico de Fluxo de Caixa Mensal (usando cashflow) -------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-
-import cashflow
-
-# Usar o fluxo de caixa da melhor solução já calculado durante a otimização
-if hasattr(problem, 'melhor_fluxo_caixa'):
-    cf = cashflow.CashFlow(problem.melhor_fluxo_caixa)
-    cf.plot()
-    # plt.title('Fluxo de Caixa Mensal - Melhor Solução')
-    # plt.xlabel('Meses')
-    # plt.ylabel('Fluxo de Caixa (USD)')
-    # plt.show(block=True)
-    plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_06_cashflow.pdf", bbox_inches='tight')
-else:
-    print("Aviso: Fluxo de caixa da melhor solução não encontrado.")
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico de Degradação da Bateria ----------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# horas_operacao_dia = 24 * taxa_disponibilidade
-# ciclos_por_dia = horas_operacao_dia / self._duracao_ciclo_operacao_hora
-# ciclos_por_mes = ciclos_por_dia * dias_por_mes
-# capacidade_bateria = np.ones(horizonte_analise_meses)                       # Cria um vetor para análisar mes a mes a saude da bateria
-# print(f'horizonte_analise_meses: {horizonte_analise_meses}')
-# for i in range(horizonte_analise_meses):
-#     porcentagem_de_ciclos = (i * ciclos_por_mes) / ciclos_bateria_vida                                        
-#     if porcentagem_de_ciclos <= 1:
-#         capacidade_bateria[i] = 1 - 0.2 * porcentagem_de_ciclos                               # Linear até 80%
-#     else:
-#         capacidade_bateria[i] = 1  # Após vida útil, mantém 80%
-plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-plt.step(np.arange(horizonte_analise_meses), np.array(problem.saude_bat), where="post")
-print(f"Saúde da bateria: {problem.saude_bat}")
-print(f"troca de bateria: {problem.troca_bat}")
-plt.title('Degradação da Bateria ao Longo do Tempo')
-plt.xlabel('Meses')
-plt.ylabel(r'Capacidade Residual [\%]')
-plt.ylim(75, 105)
-plt.xlim(0, horizonte_analise_meses)
-plt.grid()
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_07_battery_degradation.pdf", bbox_inches='tight')
-plt.show(block=False)
-
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------- Gráfico de Degradação do Supercapacitor ------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------------------------------
-# horas_operacao_mes = 24 * taxa_disponibilidade * dias_por_mes
-# capacidade_supercap = np.ones(horizonte_analise_meses)
-# for i in range(horizonte_analise_meses):
-#     horas = 100 - 100*((i * horas_operacao_mes) / horas_supercap_vida)
-#     if horas <= 0:
-#         capacidade_supercap[i] = 0
-#     else:
-#         capacidade_supercap[i] = horas
-# print(capacidade_supercap)
-plt.figure(figsize=(fig_width_cm, fig_height_cm/1.5))
-if best_Np_uc == 0:
-    plt.step(np.arange(horizonte_analise_meses), np.zeros(horizonte_analise_meses), color='tab:blue', where="post")
-else:
-    plt.step(np.arange(horizonte_analise_meses), np.array(problem.saude_uc) * 100, color='tab:blue', where="post")
-    plt.ylim(99, 101)
-plt.title('Degradação do Supercapacitor ao Longo do Tempo')
-plt.xlabel('Meses')
-plt.ylabel(r'Capacidade Residual [\%]')
-
-plt.xlim(0, horizonte_analise_meses)
-plt.grid()
-plt.tight_layout()
-plt.savefig(diretorio_figuras + "/" f"{arquivo.split(".")[0]}_08_supercapacitor_degradation.pdf", bbox_inches='tight')
-plt.show(block=True)
-
-# # ----------------------------------------------------------------------------------------------------------------------------------------------------
-# # ----------------------------------------------- Gráfico de Potência e Corrente usando subplots -------------------------------------------------
-# # ----------------------------------------------------------------------------------------------------------------------------------------------------
-
-# fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-
-# # Potência em kW
-# p_batt_kw = np.array(sim._p_batt) / 1e3
-# p_uc_kw = np.array(sim._p_uc) / 1e3
-
-# color_batt_p = 'tab:blue'
-# color_batt_i = 'tab:green'
-# color_uc_p = 'tab:red'
-# color_uc_i = 'tab:orange'
-
-# # --- BATERIA ---
-# ax1.set_ylabel('Potência Bateria (kW)', color=color_batt_p)
-# l1 = ax1.plot(sim_time, p_batt_kw, label='Potência Bateria (kW)', color=color_batt_p)
-# ax1.tick_params(axis='y', labelcolor=color_batt_p)
-
-# ax1b = ax1.twinx()
-# ax1b.set_ylabel('Corrente Bateria (A)', color=color_batt_i)
-# l2 = ax1b.plot(sim_time, sim._i_bat, label='Corrente Bateria (A)', color=color_batt_i, linestyle='--')
-# ax1b.tick_params(axis='y', labelcolor=color_batt_i)
-
-# # Legenda combinada
-# lns1 = l1 + l2
-# labs1 = [l.get_label() for l in lns1]
-# ax1.legend(lns1, labs1, loc='upper right')
-# ax1.set_title('Bateria')
-
-# # --- SUPERCAPACITOR ---
-# ax2.set_ylabel('Potência Supercapacitor (kW)', color=color_uc_p)
-# l3 = ax2.plot(sim_time, p_uc_kw, label='Potência Supercapacitor (kW)', color=color_uc_p)
-# ax2.tick_params(axis='y', labelcolor=color_uc_p)
-
-# ax2b = ax2.twinx()
-# ax2b.set_ylabel('Corrente Supercapacitor (A)', color=color_uc_i)
-# l4 = ax2b.plot(sim_time, sim._i_uc, label='Corrente Supercapacitor (A)', color=color_uc_i, linestyle='--')
-# ax2b.tick_params(axis='y', labelcolor=color_uc_i)
-
-# # Legenda combinada
-# lns2 = l3 + l4
-# labs2 = [l.get_label() for l in lns2]
-# ax2.legend(lns2, labs2, loc='upper right')
-# ax2.set_title('Supercapacitor')
-
-# plt.xlabel('Amostra')
-# plt.tight_layout()
-# plt.show(block=True)
-
-
+if __name__ == "__main__":
+    problem = MyProblem()
+    problem.configHist_BattAux(SoC_aux_ref, BH)
+    os.makedirs(diretorio_figuras, exist_ok=True)
+    problem.setData(data, sheet)
+
+
+
+    algorithm = GA(
+        pop_size=20,
+        n_offsprings=20,
+        sampling=IntegerRandomSampling(),
+        crossover=SBX(prob=0.8, eta=10),
+        mutation=PM(eta=10, prob=0.4),
+        eliminate_duplicates=True
+    )
+
+
+
+    termination = get_termination("n_gen", 1) # Uma geração é para teste?
+
+
+    if DEBUG == 1:
+        X = np.array([[1.67568827 , 2.00387028 , 2.42676082],
+                    [2.45828371 , 2.16749542 , 2.29327055],
+                    [2.48089061 , 2.00954174 , 2.29311394],
+                    [1.68066717 , 2.00387028 , 2.42676082],
+                    [2.3824625  , 1.72352808 , 2.00388331],
+                    [2.46946474 , 2.01153336 , 2.3417322 ],
+                    [1.80650082 , 2.16749542 , 2.28653366],
+                    [2.42323793 , 1.71690139 , 1.68014845],
+                    [2.46766855 , 2.01030525 , 2.2843379 ],
+                    [2.48441901 , 1.71674928 , 1.67953821],
+                    [1.66524314 , 2.15307047 , 2.28653366],
+                    [2.41622185 , 2.03898575 , 2.27603183],
+                    [2.46373699 , 2.00926662 , 2.29311394],
+                    [2.42026014 , 2.27297904 , 2.29195702],
+                    [1.72671404 , 2.07843162 , 2.27633423],
+                    [2.4163137  , 2.01700668 , 2.29311394],
+                    [2.36949422 , 2.07832437 , 2.2792785 ],
+                    [2.47444365 , 2.01153336 , 2.3423704 ],
+                    [2.41139047 , 1.73282528 , 1.68065134],
+                    [1.6689999  , 2.16749542 , 2.42979231],
+                    [2.4697575  , 1.73621974 , 2.34483868],
+                    [2.46946455 , 2.01062817 , 2.28950294],
+                    [1.66916977 , 2.16749542 , 2.28717186],
+                    [2.46713047 , 2.01001253 , 2.29311394],
+                    [2.46946439 , 2.0297654  , 2.43276159],
+                    [2.46713047 , 2.01008903 , 2.29311394],
+                    [2.46948572 , 2.07401983 , 2.29519769],
+                    [1.68789503 , 2.15607932 , 1.67230267],
+                    [2.41622185 , 2.03923487 , 1.6801506 ],
+                    [2.48134673 , 2.01033768 , 2.28198642],
+                    [2.48198928 , 1.73621974 , 2.29436782],
+                    [1.65552358 , 2.28751669 , 2.29436782],
+                    [2.41451112 , 2.07752873 , 2.29439125],
+                    [2.48169737 , 2.01153336 , 2.29372633],
+                    [2.46881361 , 2.00976048 , 2.34335867],
+                    [2.49832873 , 2.07843162 , 2.27633423],
+                    [1.65569346 , 2.28751669 , 2.29436782],
+                    [1.70103911 , 2.31993647 , 1.66291752],
+                    [2.46883301 , 2.00967934 , 2.29349918],
+                    [2.48441901 , 1.71674928 , 1.6801506 ],
+                    [1.63209465 , 1.74098441 , 2.28551734],
+                    [2.46713047 , 2.01033815 , 1.69723271],
+                    [1.6689999  , 2.16749542 , 2.28653366],
+                    [2.46975665 , 1.73621974 , 2.2944346 ],
+                    [1.66524314 , 2.16749542 , 2.29327055],
+                    [2.46881427 , 2.02905398 , 2.34555423],
+                    [2.46946474 , 2.01153336 , 2.3423704 ],
+                    [1.6689999  , 2.16749542 , 2.28717186],
+                    [2.47644084 , 2.29618761 , 2.29436782],
+                    [2.46832116 , 1.83287873 , 2.28198642]])
+        F = np.array([[-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403],
+                    [-1035859.12159403]])
+        problem.saude_bat = [1, 0.9565283018867925,
+                            0.913056603773585,
+                            0.8695849056603775,
+                            0.82611320754717,
+                            1,
+                            0.9565283018867925,
+                            0.913056603773585,
+                            0.8695849056603775,
+                            0.82611320754717,
+                            1,
+                            0.9565283018867925]
+        problem.saude_aux = [1,
+                            0.9998848,
+                            0.9997696,
+                            0.9996544,
+                            0.9995392000000001,
+                            0.9994240000000001,
+                            0.9993088000000001,
+                            0.9991936000000001,
+                            0.9990784000000001,
+                            0.9989632000000002,
+                            0.9988480000000002,
+                            0.9987328000000002]
+        problem.melhor_fluxo_caixa = [-2431162.56,
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(100808.06971927418),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(340362.6297192742),
+                                    np.float64(100808.06971927418),
+                                    np.float64(340362.6297192742)]
+
+    else:
+        outputDisplay = MyOutput(diretorio_figuras + "/" + f"{arquivo.split(".")[0]}_optimization_table.csv")
+        res = minimize(problem,
+                algorithm,
+                termination,
+                seed=1,
+                save_history=True,
+                verbose=True,
+                output=outputDisplay)
+
+        # Após a otimização
+        X = res.X
+        F = res.F
+        G = res.G
+
+
+    print(f'X: {X}')
+    print(f'F: {F}')
+    print(f'G: {G}')
+    outputDisplay.finalize()
+
+    resultados = Resultados()
+    resultados.set_results(X, F, G, problem)
+
+    #Código de Verificação para garantir que os resultados foram salvos corretamente
+    print("\n=== VERIFICAÇÃO (MAIN) ===")
+    print("Shape de X:", X.shape if X is not None else None)
+    print("Soma de F:", np.sum(F) if F is not None else None)
+    print("Soma do Fluxo de Caixa:", np.sum(problem.melhor_fluxo_caixa))
+    print("Primeiros 3 itens de saude_bat:", problem.saude_bat[:3])
+
+    with open('resultados.pkl', 'wb') as archive:
+        pickle.dump(resultados, archive)
+
+    print("Resultados salvos com sucesso em 'resultados.pkl'!")
